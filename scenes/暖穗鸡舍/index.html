@@ -26,42 +26,73 @@
         radial-gradient(circle at 50% 15%, rgba(255, 223, 165, 0.18), transparent 36%),
         linear-gradient(180deg, #35281f, #15110f);
     }
-    canvas {
-      display: block;
+    #stage {
+      position: relative;
       width: min(100vw, calc(100vh * 9 / 16));
       height: min(100vh, calc(100vw * 16 / 9));
       max-width: 100vw;
       max-height: 100vh;
-      background: #142027;
       border-radius: 14px;
+      overflow: hidden;
       box-shadow: 0 22px 70px rgba(0, 0, 0, 0.42);
+      background: #142027;
+    }
+    canvas {
+      position: absolute;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
       touch-action: none;
     }
+    #worldCanvas { pointer-events: none; }
+    #hudCanvas { background: transparent; }
     @media (max-width: 520px) {
-      canvas { border-radius: 0; }
+      #stage { border-radius: 0; }
     }
   </style>
 </head>
 <body>
   <div id="wrap">
-    <canvas id="gameCanvas" width="360" height="640" aria-label="穗潮湾场景原型集"></canvas>
+    <div id="stage">
+      <canvas id="worldCanvas" width="360" height="640" aria-hidden="true"></canvas>
+      <canvas id="hudCanvas" width="360" height="640" aria-label="穗潮湾场景原型集"></canvas>
+    </div>
   </div>
 
+  <script src="./js/three.min.js"></script>
   <script>
   (() => {
     "use strict";
 
     const Config = {
-      version: "v1.7",
+      version: "v2.1",
       W: 360,
       H: 640,
       fov: 98,
       pitchScale: 5.3,
-      yawSmoothing: 0.18,
-      pitchSmoothing: 0.18,
       staminaMax: 100,
       errorText: "哎呀，出错了，请重启试试吧~",
-      storageKey: "tidegrain-bay-multi-scene-v1"
+      storageKey: "tidegrain-bay-multi-scene-v1",
+      input: {
+        hoverEnterAngle: 12,
+        hoverExitAngle: 9,
+        hoverLockMs: 150,
+        edgeHintAngle: 18,
+        stationaryFrameCount: 18,
+        fastTurnThreshold: 2.4,
+        idleDeadzoneYaw: 0.7,
+        idleDeadzonePitch: 0.45,
+        moveDeadzoneYaw: 0.3,
+        moveDeadzonePitch: 0.2,
+        idleSmoothing: 0.10,
+        moveSmoothing: 0.18,
+        fastTurnSmoothing: 0.32,
+        dragThresholdPx: 2,
+        dragYawScale: 0.32,
+        dragPitchScale: 0.11
+      },
+      depthWeight: { far: 0, mid: 1, near: 2, fx: 3 }
     };
 
     const SceneOrder = ["coop", "dock", "orchard", "market"];
@@ -91,7 +122,43 @@
       { id: "honey_gift", title: "蜂蜜伴手礼", needs: { honey: 1 }, gold: 138, rep: 2 }
     ];
 
-    const canvas = document.getElementById("gameCanvas");
+    const ChickenArt = {
+      basePath: "./assets/chicken2p5d/",
+      idle: {
+        front: "idle_front.png",
+        back: "idle_back.png",
+        frontRight: "idle_front_right.png",
+        frontLeft: "idle_front_left.png",
+        backRight: "idle_back_right.png",
+        backLeft: "idle_back_left.png"
+      },
+      happy: {
+        side: "happy_side.png"
+      },
+      peck: {
+        up: "peck_side_up.png",
+        down: "peck_side_down.png"
+      }
+    };
+
+    const SceneBackdrops = {
+      coop: { bg: 0xd9b788, fog: 0xc69b6d, density: 0.034 },
+      dock: { bg: 0x8cb7cf, fog: 0x7ea9c0, density: 0.038 },
+      orchard: { bg: 0xc9e3a5, fog: 0xb6d68a, density: 0.03 },
+      market: { bg: 0x7f6f97, fog: 0x755f8a, density: 0.045 }
+    };
+
+    const ScenePanoramas = {
+      coop: {
+        pathLarge: "./assets/panoramas/coop-360-4096.jpg",
+        pathSmall: "./assets/panoramas/coop-360-2048.jpg",
+        radius: 34,
+        rotationY: 0
+      }
+    };
+
+    const worldCanvas = document.getElementById("worldCanvas");
+    const canvas = document.getElementById("hudCanvas");
     const ctx = canvas.getContext("2d");
 
     function defaultSave() {
@@ -126,6 +193,8 @@
       permissionAsked: false,
       lastTime: 0,
       hoverId: null,
+      hoverLockUntil: 0,
+      edgeHintId: null,
       toast: "",
       toastTimer: 0,
       result: null,
@@ -133,9 +202,12 @@
       drag: { active: false, moved: false, canPan: false, x: 0, y: 0, yaw: 0, pitch: 0 },
       press: { down: false },
       orientation: { alpha: 0, beta: 0, gamma: 0, has: false },
+      screenAngle: 0,
       calibration: { alpha: 0, beta: 70 },
       targetLook: { yaw: 0, pitch: 0 },
+      lastTargetLook: { yaw: 0, pitch: 0 },
       look: { yaw: 0, pitch: 0 },
+      motion: { stationaryFrames: 0, isStationary: false, lastTurnSpeed: 0 },
       particles: [],
       floaters: [],
       save: defaultSave()
@@ -179,6 +251,589 @@
           osc.start(now);
           osc.stop(now + entry[1] + 0.02);
         } catch (_) {}
+      }
+    };
+
+    const World = {
+      ready: false,
+      renderer: null,
+      scene: null,
+      camera: null,
+      root: null,
+      objectMap: new Map(),
+      textureLoader: null,
+      textureCache: new Map(),
+      shadowTexture: null,
+      panoramaMesh: null,
+      scratchWorld: null,
+      scratchCam: null,
+      scratchDistance: null,
+      currentSceneId: "",
+      sceneView: {
+        coop: { fov: 51, cameraHeight: 1.46, fog: 0.066 },
+        dock: { fov: 54, cameraHeight: 1.58, fog: 0.042 },
+        orchard: { fov: 57, cameraHeight: 1.56, fog: 0.03 },
+        market: { fov: 56, cameraHeight: 1.58, fog: 0.045 }
+      },
+      init() {
+        if (!window.THREE) throw new Error("THREE not loaded");
+        this.renderer = new THREE.WebGLRenderer({ canvas: worldCanvas, antialias: true, alpha: true });
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        this.renderer.setSize(Config.W, Config.H, false);
+        this.textureLoader = new THREE.TextureLoader();
+        if ("outputColorSpace" in this.renderer && THREE.SRGBColorSpace) {
+          this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+        }
+        this.renderer.setClearColor(0x000000, 0);
+
+        this.scene = new THREE.Scene();
+        this.camera = new THREE.PerspectiveCamera(56, Config.W / Config.H, 0.1, 80);
+        this.camera.rotation.order = "YXZ";
+        this.camera.position.set(0, 1.58, 0);
+
+        const hemi = new THREE.HemisphereLight(0xfff0d0, 0x574333, 1.55);
+        hemi.position.set(0, 10, 0);
+        this.scene.add(hemi);
+
+        const key = new THREE.DirectionalLight(0xfff5dd, 1.25);
+        key.position.set(4, 9, 3);
+        this.scene.add(key);
+
+        this.root = new THREE.Group();
+        this.scene.add(this.root);
+        this.scratchWorld = new THREE.Vector3();
+        this.scratchCam = new THREE.Vector3();
+        this.scratchDistance = new THREE.Vector3();
+        this.ready = true;
+        worldCanvas.style.opacity = "0";
+      },
+      setActive(active) {
+        worldCanvas.style.opacity = active && this.ready ? "1" : "0";
+      },
+      unloadScene() {
+        if (!this.ready) return;
+        while (this.root.children.length) this.root.remove(this.root.children[0]);
+        this.objectMap.clear();
+        this.panoramaMesh = null;
+        this.currentSceneId = "";
+      },
+      getView(sceneId) {
+        return this.sceneView[sceneId] || this.sceneView.coop;
+      },
+      loadScene(sceneData) {
+        if (!this.ready || !sceneData) return;
+        this.unloadScene();
+        this.currentSceneId = sceneData.id;
+        const view = this.getView(sceneData.id);
+        this.camera.fov = view.fov;
+        this.camera.position.y = view.cameraHeight;
+        this.camera.updateProjectionMatrix();
+        this.applySceneBackdrop(sceneData.id);
+        try {
+          this.buildSceneEnvironment(sceneData.id);
+          for (const obj of sceneData.objects) {
+            const mesh = this.createObjectMesh(obj);
+            if (!mesh) continue;
+            mesh.userData.objId = obj.id;
+            this.root.add(mesh);
+            this.objectMap.set(obj.id, mesh);
+            this.syncObjectTransform(obj, mesh);
+          }
+        } catch (err) {
+          console.warn("Scene build failed, falling back to base coop environment.", err);
+          this.unloadScene();
+          this.currentSceneId = sceneData.id;
+          this.scene.background = new THREE.Color((SceneBackdrops[sceneData.id] || SceneBackdrops.coop).bg);
+          this.buildSceneEnvironment(sceneData.id, true);
+          for (const obj of sceneData.objects) {
+            const mesh = this.createObjectMesh(obj);
+            if (!mesh) continue;
+            mesh.userData.objId = obj.id;
+            this.root.add(mesh);
+            this.objectMap.set(obj.id, mesh);
+            this.syncObjectTransform(obj, mesh);
+          }
+        }
+      },
+      applySceneBackdrop(sceneId) {
+        const entry = SceneBackdrops[sceneId] || SceneBackdrops.coop;
+        const view = this.getView(sceneId);
+        this.scene.background = new THREE.Color(entry.bg);
+        this.scene.fog = new THREE.FogExp2(entry.fog, view.fog || entry.density);
+      },
+      mat(color, roughness = 0.88, metalness = 0.06, emissive = 0x000000, emissiveIntensity = 0) {
+        return new THREE.MeshStandardMaterial({ color, roughness, metalness, emissive, emissiveIntensity });
+      },
+      addMesh(group, geometry, material, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(x, y, z);
+        mesh.rotation.set(rx, ry, rz);
+        mesh.scale.set(sx, sy, sz);
+        group.add(mesh);
+        return mesh;
+      },
+      loadSmoothTexture(path) {
+        const cacheKey = `smooth:${path}`;
+        const cached = this.textureCache.get(cacheKey);
+        if (cached) return cached;
+        const texture = this.textureLoader.load(path);
+        texture.magFilter = THREE.LinearFilter;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        if ("colorSpace" in texture && THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
+        if (this.renderer && this.renderer.capabilities && typeof this.renderer.capabilities.getMaxAnisotropy === "function") {
+          texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy() || 1);
+        }
+        this.textureCache.set(cacheKey, texture);
+        return texture;
+      },
+      resolvePanoramaPath(config) {
+        const preferSmall = ("ontouchstart" in window)
+          || (navigator && typeof navigator.maxTouchPoints === "number" && navigator.maxTouchPoints > 0);
+        const maxTextureSize = this.renderer && this.renderer.capabilities
+          ? this.renderer.capabilities.maxTextureSize
+          : 4096;
+        if (preferSmall && config.pathSmall) return config.pathSmall;
+        if (maxTextureSize < 4096 && config.pathSmall) return config.pathSmall;
+        if (config.pathLarge) return config.pathLarge;
+        return config.pathSmall || config.path || "";
+      },
+      loadPixelTexture(path) {
+        const cached = this.textureCache.get(path);
+        if (cached) return cached;
+        const texture = this.textureLoader.load(path);
+        texture.magFilter = THREE.NearestFilter;
+        texture.minFilter = THREE.NearestFilter;
+        texture.generateMipmaps = false;
+        if ("colorSpace" in texture && THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
+        this.textureCache.set(path, texture);
+        return texture;
+      },
+      getChickenShadowTexture() {
+        if (this.shadowTexture) return this.shadowTexture;
+        const shadowCanvas = document.createElement("canvas");
+        shadowCanvas.width = 96;
+        shadowCanvas.height = 48;
+        const shadowCtx = shadowCanvas.getContext("2d");
+        const gradient = shadowCtx.createRadialGradient(48, 24, 5, 48, 24, 31);
+        gradient.addColorStop(0, "rgba(28, 14, 6, 0.54)");
+        gradient.addColorStop(0.6, "rgba(28, 14, 6, 0.2)");
+        gradient.addColorStop(1, "rgba(28, 14, 6, 0)");
+        shadowCtx.fillStyle = gradient;
+        shadowCtx.beginPath();
+        shadowCtx.ellipse(48, 24, 36, 15, 0, 0, Math.PI * 2);
+        shadowCtx.fill();
+        this.shadowTexture = new THREE.CanvasTexture(shadowCanvas);
+        this.shadowTexture.needsUpdate = true;
+        return this.shadowTexture;
+      },
+      resolveChickenState(obj) {
+        if (obj.mood === "happy") return "happy";
+        if (obj.mood === "eat") return "peck";
+        return "idle";
+      },
+      resolveChickenFrame(obj) {
+        const poseYaw = clamp(obj.faceOffset || 0, -179, 179);
+        const absPose = Math.abs(poseYaw);
+        const facingRight = poseYaw >= 0;
+        const state = this.resolveChickenState(obj);
+        const idleKey = absPose < 25
+          ? "front"
+          : absPose > 142
+            ? "back"
+            : absPose < 88
+              ? (facingRight ? "frontRight" : "frontLeft")
+              : (facingRight ? "backRight" : "backLeft");
+        const idleFrame = {
+          path: ChickenArt.basePath + ChickenArt.idle[idleKey],
+          flipX: false,
+          spriteScaleX: 1,
+          spriteScaleY: 1,
+          shadowScaleX: 1,
+          shadowScaleY: 1,
+          tint: obj.spriteTint || "#ffffff"
+        };
+        if (state === "idle" || absPose < 22 || absPose > 150) return idleFrame;
+        if (state === "happy") {
+          return {
+            path: ChickenArt.basePath + ChickenArt.happy.side,
+            flipX: facingRight,
+            spriteScaleX: 1.02,
+            spriteScaleY: 1.07,
+            shadowScaleX: 0.96,
+            shadowScaleY: 0.98,
+            tint: obj.spriteTint || "#ffffff"
+          };
+        }
+        const peckKey = Math.sin(performance.now() * 0.006 + (obj.wander || 0) * 0.5) > 0.16 ? "down" : "up";
+        return {
+          path: ChickenArt.basePath + ChickenArt.peck[peckKey],
+          flipX: facingRight,
+          spriteScaleX: 1.04,
+          spriteScaleY: peckKey === "down" ? 0.96 : 1,
+          shadowScaleX: peckKey === "down" ? 1.04 : 0.98,
+          shadowScaleY: peckKey === "down" ? 1.02 : 0.96,
+          tint: obj.spriteTint || "#ffffff"
+        };
+      },
+      updateChickenBillboard(obj, group) {
+        if (!group || !group.userData.sprite) return;
+        const frame = this.resolveChickenFrame(obj);
+        const sprite = group.userData.sprite;
+        const shadow = group.userData.shadow;
+        if (group.userData.framePath !== frame.path) {
+          sprite.material.map = this.loadPixelTexture(frame.path);
+          sprite.material.needsUpdate = true;
+          group.userData.framePath = frame.path;
+        }
+        sprite.material.color.set(frame.tint);
+        sprite.scale.set(frame.flipX ? -frame.spriteScaleX : frame.spriteScaleX, frame.spriteScaleY, 1);
+        if (shadow) shadow.scale.set(frame.shadowScaleX, frame.shadowScaleY, 1);
+        sprite.getWorldPosition(this.scratchWorld);
+        sprite.lookAt(this.camera.position.x, this.scratchWorld.y, this.camera.position.z);
+      },
+      makePanoramaSphere(config) {
+        const texturePath = this.resolvePanoramaPath(config);
+        const sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(config.radius || 34, 64, 40),
+          new THREE.MeshBasicMaterial({
+            map: this.loadSmoothTexture(texturePath),
+            color: new THREE.Color(config.tint || 0xf5dfbf),
+            side: THREE.BackSide,
+            fog: false,
+            toneMapped: false,
+            depthWrite: false
+          })
+        );
+        sphere.position.copy(this.camera.position);
+        sphere.rotation.y = config.rotationY || 0;
+        sphere.renderOrder = -20;
+        sphere.frustumCulled = false;
+        return sphere;
+      },
+      addRingProp(yaw, radius, y, width, height, depth, color) {
+        const geo = new THREE.BoxGeometry(width, height, depth);
+        const mesh = new THREE.Mesh(geo, this.mat(color));
+        const rad = THREE.MathUtils.degToRad(yaw);
+        mesh.position.set(Math.sin(rad) * radius, y + height * 0.5, -Math.cos(rad) * radius);
+        mesh.lookAt(0, mesh.position.y, 0);
+        this.root.add(mesh);
+      },
+      buildSceneEnvironment(sceneId, forceFallback = false) {
+        const panorama = !forceFallback ? ScenePanoramas[sceneId] : null;
+        if (panorama) {
+          this.panoramaMesh = this.makePanoramaSphere(panorama);
+          this.root.add(this.panoramaMesh);
+        } else {
+          const sky = new THREE.Mesh(
+            new THREE.SphereGeometry(38, 24, 16),
+            new THREE.MeshBasicMaterial({ color: sceneId === "market" ? 0x6f5c84 : sceneId === "dock" ? 0x8fb9d0 : sceneId === "orchard" ? 0xc4dea1 : 0xf0c578, side: THREE.BackSide })
+          );
+          this.root.add(sky);
+        }
+
+        if (sceneId === "coop") {
+          if (!panorama) {
+            const floor = new THREE.Mesh(new THREE.CircleGeometry(12.5, 48), this.mat(0x7d5236));
+            floor.rotation.x = -Math.PI / 2;
+            this.root.add(floor);
+            const wall = new THREE.Mesh(new THREE.CylinderGeometry(9.8, 9.8, 4.9, 48, 1, true), this.mat(0xad7b4a));
+            wall.position.y = 2.02;
+            wall.material.side = THREE.BackSide;
+            this.root.add(wall);
+            this.addRingProp(4, 8.9, 1.12, 2.8, 1.9, 0.12, 0xffe1a4);
+            this.addRingProp(-112, 7.7, 0.18, 1.2, 0.9, 1.2, 0xc49346);
+            this.addRingProp(118, 7.8, 0.2, 0.9, 1.1, 0.9, 0x774732);
+          }
+        } else if (sceneId === "dock") {
+          const water = new THREE.Mesh(new THREE.CircleGeometry(18, 56), this.mat(0x4d90af, 0.45, 0.02));
+          water.rotation.x = -Math.PI / 2;
+          this.root.add(water);
+          const deck = new THREE.Mesh(new THREE.RingGeometry(1.9, 7.2, 32), this.mat(0x8b6442));
+          deck.rotation.x = -Math.PI / 2;
+          deck.position.y = 0.02;
+          this.root.add(deck);
+        } else if (sceneId === "orchard") {
+          const grass = new THREE.Mesh(new THREE.CircleGeometry(18, 48), this.mat(0x7aa858));
+          grass.rotation.x = -Math.PI / 2;
+          this.root.add(grass);
+          this.addRingProp(34, 12.5, 0, 0.9, 3.6, 0.9, 0xd6b07d);
+        } else if (sceneId === "market") {
+          const ground = new THREE.Mesh(new THREE.CircleGeometry(16, 48), this.mat(0x6c4a43));
+          ground.rotation.x = -Math.PI / 2;
+          this.root.add(ground);
+          const lanternMat = this.mat(0xffdc88, 0.5, 0, 0xffc85b, 0.4);
+          [-34, 0, 36].forEach((yaw) => {
+            const g = new THREE.Group();
+            const rad = THREE.MathUtils.degToRad(yaw);
+            g.position.set(Math.sin(rad) * 9.5, 2.8, -Math.cos(rad) * 9.5);
+            g.lookAt(0, g.position.y, 0);
+            this.addMesh(g, new THREE.CylinderGeometry(0.05, 0.05, 0.6, 6), this.mat(0xbba47c), 0, 0.2, 0);
+            this.addMesh(g, new THREE.BoxGeometry(0.34, 0.46, 0.34), lanternMat, 0, -0.25, 0);
+            this.root.add(g);
+          });
+        }
+      },
+      getObjectRadius(obj) {
+        const map = {
+          dust: 8.2, hayBits: 5.3, glint: 5.1, cuePulse: 9.4, glimmer: 7.5,
+          hopper: 4.9, trough: 4.4, chicken: 4.2, egg: 3.8,
+          boat: 12.2, post: 8.4, net: 7.8, spot: 7.1,
+          fence: 8.6, beeFx: 5.9, leafFx: 6.6, tree: 7.4, hive: 5.6, crateGood: 4.9, press: 5.1, fruit: 4.1,
+          glowOrb: 6.7, flagFx: 8.1, boxCluster: 7.2, board: 5.2, stallGrocer: 6.6, stallFish: 6.6, stallCraft: 5.9
+        };
+        return obj.distance || map[obj.kind] || (depthBandOf(obj) === "far" ? 10 : depthBandOf(obj) === "mid" ? 7 : 5);
+      },
+      getObjectBaseY(obj) {
+        const map = {
+          dust: 1.8, hayBits: 0.38, glint: 0.54, cuePulse: obj.pitch > 0 ? 2.15 : 0.9, glimmer: 0.12,
+          hopper: 0.82, trough: 0.08, chicken: 0, egg: 0,
+          boat: 0.12, post: 0, net: 0.45, spot: 0.04,
+          fence: 0, beeFx: 1.45, leafFx: 2.3, tree: 0, hive: 0.08, crateGood: 0.05, press: 0.05, fruit: 0,
+          glowOrb: 1.75, flagFx: 1.9, boxCluster: 0.04, board: 0.12, stallGrocer: 0.05, stallFish: 0.05, stallCraft: 0.05
+        };
+        return typeof obj.height === "number" ? obj.height : (map[obj.kind] || 0);
+      },
+      syncObjectTransform(obj, mesh) {
+        if (!mesh) return;
+        const radius = this.getObjectRadius(obj);
+        const rad = THREE.MathUtils.degToRad(obj.yaw);
+        mesh.position.set(Math.sin(rad) * radius, this.getObjectBaseY(obj), -Math.cos(rad) * radius);
+        mesh.visible = !obj.hidden;
+        if (obj.kind !== "dust" && obj.kind !== "beeFx" && obj.kind !== "leafFx" && obj.kind !== "cuePulse" && obj.kind !== "glint" && obj.kind !== "glimmer" && obj.kind !== "glowOrb" && obj.kind !== "chicken") {
+          mesh.lookAt(0, mesh.position.y, 0);
+        }
+      },
+      makeChicken(obj) {
+        const group = new THREE.Group();
+        const shadow = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.98, 0.48),
+          new THREE.MeshBasicMaterial({
+            map: this.getChickenShadowTexture(),
+            transparent: true,
+            depthWrite: false,
+            opacity: 0.46
+          })
+        );
+        shadow.rotation.x = -Math.PI / 2;
+        shadow.position.y = 0.015;
+        shadow.renderOrder = 1;
+        group.add(shadow);
+        const sprite = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.38, 1.38),
+          new THREE.MeshBasicMaterial({
+            map: this.loadPixelTexture(ChickenArt.basePath + ChickenArt.idle.front),
+            color: new THREE.Color(obj.spriteTint || "#ffffff"),
+            transparent: true,
+            alphaTest: 0.08,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          })
+        );
+        sprite.position.y = 0.72;
+        sprite.renderOrder = 2;
+        group.add(sprite);
+        group.userData.sprite = sprite;
+        group.userData.shadow = shadow;
+        group.userData.focusY = 0.58;
+        this.updateChickenBillboard(obj, group);
+        return group;
+      },
+      createObjectMesh(obj) {
+        const g = new THREE.Group();
+        const wood = this.mat(0x7a5133);
+        const warmWood = this.mat(0xa57646);
+        const straw = this.mat(0xd6b15a);
+        switch (obj.kind) {
+          case "hopper":
+            this.addMesh(g, new THREE.BoxGeometry(0.9, 0.7, 0.72), wood, 0, 0.42, 0);
+            for (let i = -0.26; i <= 0.26; i += 0.13) this.addMesh(g, new THREE.ConeGeometry(0.08, 0.24, 6), straw, i, 0.88, 0);
+            g.userData.focusY = 0.56;
+            return g;
+          case "trough":
+            this.addMesh(g, new THREE.BoxGeometry(1.1, 0.24, 0.38), wood, 0, 0.18, 0);
+            g.userData.content = this.addMesh(g, new THREE.BoxGeometry(0.94, 0.1, 0.22), this.mat(obj.filled ? 0xd6b15a : 0x4f2e21), 0, 0.23, 0);
+            g.userData.focusY = 0.28;
+            return g;
+          case "chicken":
+            return this.makeChicken(obj);
+          case "egg":
+            this.addMesh(g, new THREE.SphereGeometry(0.22, 18, 14), this.mat(obj.quality === "silverEgg" ? 0xe7f2ff : 0xfff2d5, 0.45, 0), 0, 0.2, 0, 0, 0, 0, 0.78, 1.08, 0.78);
+            if (obj.quality === "silverEgg") this.addMesh(g, new THREE.OctahedronGeometry(0.07, 0), this.mat(0xf5fbff, 0.2, 0, 0xeaf7ff, 0.4), 0, 0.5, 0);
+            g.userData.focusY = 0.24;
+            return g;
+          case "dust":
+            for (let i = 0; i < 5; i++) this.addMesh(g, new THREE.SphereGeometry(0.04 + i * 0.006, 8, 8), this.mat(0xffe7b4, 0.4, 0, 0xffdf9a, 0.2), Math.sin(i) * 0.22, Math.cos(i * 0.7) * 0.12, Math.cos(i) * 0.16);
+            return g;
+          case "hayBits":
+            for (let i = 0; i < 5; i++) this.addMesh(g, new THREE.BoxGeometry(0.05, 0.22, 0.03), straw, -0.18 + i * 0.09, 0.08, 0, 0.22, 0, 0.55);
+            return g;
+          case "glint":
+            this.addMesh(g, new THREE.OctahedronGeometry(0.12, 0), this.mat(0xfff4b8, 0.2, 0, 0xffe188, 0.55), 0, 0, 0);
+            return g;
+          case "cuePulse":
+            this.addMesh(g, new THREE.TorusGeometry(0.26, 0.018, 8, 32), this.mat(0xffe59a, 0.4, 0, 0xffcb66, 0.35), 0, 0, 0, Math.PI / 2);
+            this.addMesh(g, new THREE.TorusGeometry(0.4, 0.012, 8, 32), this.mat(0xffefc0, 0.4, 0, 0xffcb66, 0.22), 0, 0, 0, Math.PI / 2);
+            return g;
+          case "boat":
+            this.addMesh(g, new THREE.BoxGeometry(1.15, 0.22, 0.52), this.mat(0x6c5647), 0, 0.18, 0);
+            this.addMesh(g, new THREE.CylinderGeometry(0.03, 0.03, 0.72, 6), this.mat(0xd0b48b), 0.1, 0.72, 0);
+            this.addMesh(g, new THREE.BoxGeometry(0.02, 0.42, 0.52), this.mat(0xf5ead8), 0.28, 0.75, 0, 0, 0, 0, 1, 1, 0.02);
+            return g;
+          case "post":
+            this.addMesh(g, new THREE.CylinderGeometry(0.09, 0.12, 1.3, 8), this.mat(0x8b6849), 0, 0.65, 0);
+            return g;
+          case "net":
+            this.addMesh(g, new THREE.TorusGeometry(0.36, 0.03, 8, 32), this.mat(0xd0c7b6), 0, 0.42, 0, Math.PI / 2);
+            this.addMesh(g, new THREE.CylinderGeometry(0.02, 0.02, 0.72, 6), this.mat(0xa98b68), 0, 0.16, 0);
+            return g;
+          case "glimmer":
+          case "spot":
+            const active = State.currentScene && State.currentScene.data.activeId === obj.id;
+            const ringA = this.addMesh(g, new THREE.TorusGeometry(0.32, 0.018, 8, 32), this.mat(active ? 0xfff3bb : 0xd7eef8, 0.3, 0, active ? 0xffdb7d : 0x8cc7de, 0.4), 0, 0.02, 0, Math.PI / 2);
+            const ringB = this.addMesh(g, new THREE.TorusGeometry(0.56, 0.014, 8, 32), this.mat(active ? 0xfff7d1 : 0xe8f7ff, 0.3, 0, active ? 0xffdb7d : 0x8cc7de, 0.2), 0, 0.02, 0, Math.PI / 2);
+            g.userData.rings = [ringA, ringB];
+            g.userData.focusY = 0.05;
+            return g;
+          case "fence":
+            this.addMesh(g, new THREE.BoxGeometry(1.3, 0.08, 0.08), this.mat(0x8f6d49), 0, 0.74, 0);
+            [-0.45, 0, 0.45].forEach((x) => this.addMesh(g, new THREE.BoxGeometry(0.08, 0.8, 0.08), this.mat(0x8f6d49), x, 0.4, 0));
+            return g;
+          case "beeFx":
+            for (let i = 0; i < 3; i++) this.addMesh(g, new THREE.SphereGeometry(0.05, 10, 10), this.mat(0xf7d768, 0.3, 0, 0xfddf76, 0.25), Math.cos(i * 2.1) * 0.32, Math.sin(i * 1.5) * 0.18, Math.sin(i) * 0.16);
+            return g;
+          case "leafFx":
+            for (let i = 0; i < 4; i++) this.addMesh(g, new THREE.SphereGeometry(0.07, 8, 8), this.mat(0xf2c979, 0.5), Math.sin(i) * 0.26, Math.cos(i * 0.7) * 0.22, Math.cos(i) * 0.18, 0, 0, 0, 1.2, 0.42, 0.72);
+            return g;
+          case "tree":
+            this.addMesh(g, new THREE.CylinderGeometry(0.14, 0.18, 1.25, 10), this.mat(0x7b4f2d), 0, 0.62, 0);
+            g.userData.crown = this.addMesh(g, new THREE.SphereGeometry(0.86, 18, 14), this.mat(obj.shaken ? 0x7fbb5d : 0x86c45d), 0, 1.7, 0);
+            if (!obj.shaken) {
+              const fruitA = this.addMesh(g, new THREE.SphereGeometry(0.11, 10, 10), this.mat(0xffb26d), -0.34, 1.58, 0.28);
+              const fruitB = this.addMesh(g, new THREE.SphereGeometry(0.11, 10, 10), this.mat(0xffb26d), 0.26, 1.42, -0.12);
+              g.userData.treeFruit = [fruitA, fruitB];
+            }
+            g.userData.focusY = 1.35;
+            return g;
+          case "hive":
+            g.userData.body = this.addMesh(g, new THREE.BoxGeometry(0.72, 0.92, 0.56), this.mat(obj.taken ? 0x8d6a49 : 0xcfab58), 0, 0.48, 0);
+            g.userData.focusY = 0.5;
+            return g;
+          case "crateGood":
+            this.addMesh(g, new THREE.BoxGeometry(0.8, 0.34, 0.58), this.mat(0xd39e59), 0, 0.18, 0);
+            g.userData.focusY = 0.26;
+            return g;
+          case "press":
+            this.addMesh(g, new THREE.BoxGeometry(0.82, 0.54, 0.82), this.mat(0x8b6d56), 0, 0.28, 0);
+            this.addMesh(g, new THREE.CylinderGeometry(0.18, 0.18, 0.42, 12), this.mat(0xc89f67), 0, 0.58, 0);
+            this.addMesh(g, new THREE.BoxGeometry(0.08, 0.32, 0.08), this.mat(0x644632), 0, 0.93, 0);
+            g.userData.focusY = 0.54;
+            return g;
+          case "fruit":
+            this.addMesh(g, new THREE.SphereGeometry(0.18, 12, 12), this.mat(obj.fruitType === "good" ? 0xffb364 : 0xdd8b59), 0, 0.18, 0);
+            g.userData.focusY = 0.18;
+            return g;
+          case "glowOrb":
+            this.addMesh(g, new THREE.SphereGeometry(0.18, 12, 12), this.mat(0xffd78d, 0.3, 0, 0xffb75c, 0.45), 0, 0, 0);
+            return g;
+          case "flagFx":
+            this.addMesh(g, new THREE.BoxGeometry(0.03, 0.9, 0.03), this.mat(0xc8b28b), 0, 0.45, 0);
+            this.addMesh(g, new THREE.BoxGeometry(0.42, 0.22, 0.04), this.mat(0xd98f5f), 0.2, 0.68, 0);
+            return g;
+          case "boxCluster":
+            this.addMesh(g, new THREE.BoxGeometry(0.62, 0.3, 0.52), this.mat(0x94663f), 0, 0.16, 0);
+            this.addMesh(g, new THREE.BoxGeometry(0.5, 0.24, 0.46), this.mat(0xad7b4c), -0.36, 0.12, 0.08);
+            this.addMesh(g, new THREE.BoxGeometry(0.46, 0.22, 0.42), this.mat(0x7d5737), 0.3, 0.11, -0.04);
+            return g;
+          case "board":
+            this.addMesh(g, new THREE.BoxGeometry(0.12, 1.4, 0.12), this.mat(0x7d5638), 0, 0.7, 0);
+            this.addMesh(g, new THREE.BoxGeometry(1.05, 1.15, 0.12), this.mat(0xf0d9b0), 0, 1.34, 0);
+            g.userData.focusY = 1.2;
+            return g;
+          case "stallGrocer":
+          case "stallFish":
+          case "stallCraft":
+            const color = obj.kind === "stallGrocer" ? 0x9cc666 : obj.kind === "stallFish" ? 0x6cbad7 : 0xc9a8f7;
+            this.addMesh(g, new THREE.BoxGeometry(1.2, 0.72, 0.82), this.mat(0x7a5133), 0, 0.36, 0);
+            this.addMesh(g, new THREE.BoxGeometry(1.36, 0.2, 0.96), this.mat(color), 0, 1.08, 0);
+            g.userData.focusY = 0.8;
+            return g;
+          default:
+            return null;
+        }
+      },
+      projectObject(obj) {
+        if (!this.ready) return null;
+        const mesh = this.objectMap.get(obj.id);
+        if (!mesh || !mesh.visible) return null;
+        this.scratchWorld.set(0, mesh.userData.focusY || 0.3, 0);
+        mesh.localToWorld(this.scratchWorld);
+        this.scratchCam.copy(this.scratchWorld).applyMatrix4(this.camera.matrixWorldInverse);
+        if (this.scratchCam.z > -0.12) return null;
+        this.scratchWorld.project(this.camera);
+        if (this.scratchWorld.z < -1 || this.scratchWorld.z > 1) return null;
+        const x = (this.scratchWorld.x * 0.5 + 0.5) * Config.W;
+        const y = (-this.scratchWorld.y * 0.5 + 0.5) * Config.H;
+        mesh.getWorldPosition(this.scratchDistance);
+        const distance = this.camera.position.distanceTo(this.scratchDistance);
+        const scale = clamp(4.6 / distance, 0.34, 1.9);
+        return { x, y, scale, dx: x - Config.W / 2, distance };
+      },
+      update(sceneData, dt) {
+        if (!this.ready || !sceneData) return;
+        this.camera.rotation.y = THREE.MathUtils.degToRad(-State.look.yaw);
+        this.camera.rotation.x = THREE.MathUtils.degToRad(State.look.pitch);
+        if (this.panoramaMesh) this.panoramaMesh.position.copy(this.camera.position);
+        for (const obj of sceneData.objects) {
+          const mesh = this.objectMap.get(obj.id);
+          if (!mesh) continue;
+          this.syncObjectTransform(obj, mesh);
+          if (obj.kind === "trough" && mesh.userData.content) {
+            mesh.userData.content.material.color.set(obj.filled ? 0xd6b15a : 0x4f2e21);
+          }
+          if ((obj.kind === "spot" || obj.kind === "glimmer") && mesh.userData.rings) {
+            const active = sceneData.data.activeId === obj.id;
+            const ringColors = active
+              ? [{ color: 0xfff3bb, emissive: 0xffdb7d, intensity: 0.4 }, { color: 0xfff7d1, emissive: 0xffdb7d, intensity: 0.2 }]
+              : [{ color: 0xd7eef8, emissive: 0x8cc7de, intensity: 0.18 }, { color: 0xe8f7ff, emissive: 0x8cc7de, intensity: 0.12 }];
+            mesh.userData.rings.forEach((ring, index) => {
+              ring.material.color.set(ringColors[index].color);
+              ring.material.emissive.set(ringColors[index].emissive);
+              ring.material.emissiveIntensity = ringColors[index].intensity;
+            });
+          }
+          if (obj.kind === "tree" && mesh.userData.crown) {
+            mesh.userData.crown.material.color.set(obj.shaken ? 0x7fbb5d : 0x86c45d);
+            if (mesh.userData.treeFruit) mesh.userData.treeFruit.forEach((fruit) => { fruit.visible = !obj.shaken; });
+          }
+          if (obj.kind === "hive" && mesh.userData.body) {
+            mesh.userData.body.material.color.set(obj.taken ? 0x8d6a49 : 0xcfab58);
+          }
+          if (obj.kind === "chicken") {
+            mesh.position.y += Math.sin(obj.bob) * (obj.mood === "happy" ? 0.07 : 0.03);
+            this.updateChickenBillboard(obj, mesh);
+            if (mesh.userData.shadow) {
+              const shadowPulse = obj.mood === "happy" ? 1 - Math.max(0, Math.sin(obj.bob)) * 0.16 : 1 - Math.max(0, Math.sin(obj.bob)) * 0.08;
+              mesh.userData.shadow.scale.multiplyScalar(shadowPulse);
+            }
+          } else if (obj.kind === "fruit") {
+            mesh.position.y += Math.sin(obj.bounce || 0) * 0.08;
+          } else if (obj.kind === "boat") {
+            mesh.position.y += Math.sin(performance.now() * 0.001 + (obj.bob || 0)) * 0.06;
+          } else if (obj.kind === "spot" || obj.kind === "glimmer" || obj.kind === "cuePulse") {
+            const pulse = 1 + Math.sin(performance.now() * 0.004 + (obj.pulse || 0)) * 0.08;
+            mesh.scale.setScalar(pulse);
+          } else if (obj.kind === "glint" || obj.kind === "leafFx" || obj.kind === "beeFx" || obj.kind === "glowOrb") {
+            mesh.rotation.y += dt * 0.9;
+          } else if (obj.kind === "dust") {
+            mesh.rotation.y -= dt * 0.3;
+          }
+        }
+      },
+      render(active) {
+        if (!this.ready) return;
+        this.setActive(active);
+        if (!active) return;
+        this.renderer.render(this.scene, this.camera);
       }
     };
 
@@ -323,13 +978,71 @@
       return Object.entries(need).map(([key, amount]) => `${InventoryLabels[key]}x${amount}`).join(" + ");
     }
 
+    function depthBandOf(obj) {
+      return obj.depthBand || "near";
+    }
+    function depthParallax(obj) {
+      const map = { far: 0.76, mid: 0.9, near: 1, fx: 1.06 };
+      return map[depthBandOf(obj)] || 1;
+    }
+    function depthScaleMul(obj) {
+      const map = { far: 0.84, mid: 0.94, near: 1.02, fx: 0.92 };
+      return map[depthBandOf(obj)] || 1;
+    }
+    function getEnterAngle(obj) {
+      return obj.enterAngle || obj.angle || Config.input.hoverEnterAngle;
+    }
+    function getExitAngle(obj) {
+      return obj.exitAngle || Math.max(8, getEnterAngle(obj) - 3);
+    }
+    function getObjectPriority(obj) {
+      let score = obj.priority || 0;
+      if (depthBandOf(obj) === "near") score += 10;
+      if (obj.id === getGuideTargetId()) score += 20;
+      return score;
+    }
+    function getGuideTargetId() {
+      const guide = getSceneHint();
+      return guide && guide.obj ? guide.obj.id : "";
+    }
+    function isInteractable(obj) {
+      return !!obj && !obj.disabled && obj.interactable !== false && !!obj.action;
+    }
+    function getLookDistance(obj) {
+      const dy = Math.abs(obj.pitch - State.look.pitch);
+      return Math.hypot(angleDistance(obj.yaw, State.look.yaw), dy * 1.35);
+    }
+    function getHoverRadius(obj, projection) {
+      const base = {
+        hopper: 32,
+        trough: 34,
+        chicken: 36,
+        egg: 30,
+        spot: 36,
+        tree: 44,
+        hive: 32,
+        crateGood: 34,
+        press: 34,
+        board: 38,
+        stallGrocer: 44,
+        stallFish: 44,
+        stallCraft: 42,
+        fruit: 30
+      };
+      const radius = (base[obj.kind] || 32) * (projection ? clamp(projection.scale, 0.72, 1.42) : 1);
+      return radius;
+    }
     function project(obj) {
+      if (World.ready && State.screen === "playing") {
+        const projected = World.projectObject(obj);
+        if (projected) return projected;
+      }
       const dx = normDeg(obj.yaw - State.look.yaw);
       if (Math.abs(dx) > Config.fov / 2 + 22) return null;
-      const x = Config.W / 2 + (dx / (Config.fov / 2)) * (Config.W / 2);
+      const x = Config.W / 2 + (dx / (Config.fov / 2)) * (Config.W / 2) * depthParallax(obj);
       const y = 330 - (obj.pitch - State.look.pitch) * Config.pitchScale;
-      const scale = clamp(1 - Math.abs(dx) / 132, 0.52, 1.16);
-      return { x, y, scale, dx };
+      const scale = clamp((1 - Math.abs(dx) / 132) * depthScaleMul(obj), 0.46, 1.18);
+      return { x, y, scale, dx, distance: 6 };
     }
 
     function getSceneObjects() {
@@ -338,19 +1051,54 @@
 
     function findHover() {
       if (!State.currentScene) return null;
-      let best = null;
-      let bestScore = Infinity;
-      for (const obj of getSceneObjects()) {
-        if (obj.disabled) continue;
-        const dy = Math.abs(obj.pitch - State.look.pitch);
-        const dist = Math.hypot(angleDistance(obj.yaw, State.look.yaw), dy * 1.35);
-        if (dist < (obj.angle || 15) && dist < bestScore) {
-          best = obj;
-          bestScore = dist;
+      const now = performance.now();
+      const current = State.hoverId ? getSceneObjects().find(o => o.id === State.hoverId) : null;
+      if (current && isInteractable(current)) {
+        const currentProj = project(current);
+        if (currentProj) {
+          const currentScreenDist = Math.hypot(currentProj.x - Config.W / 2, (currentProj.y - Config.H / 2) * 1.08);
+          if (currentScreenDist <= getHoverRadius(current, currentProj) * 0.88 && now < State.hoverLockUntil) return current;
         }
       }
+
+      let best = null;
+      let bestScore = -Infinity;
+      for (const obj of getSceneObjects()) {
+        if (!isInteractable(obj)) continue;
+        const p = project(obj);
+        if (!p) continue;
+        const screenDist = Math.hypot(p.x - Config.W / 2, (p.y - Config.H / 2) * 1.08);
+        const radius = getHoverRadius(obj, p);
+        if (screenDist > radius) continue;
+        let score = getObjectPriority(obj) + p.scale * 26 - screenDist;
+        if (current && current.id === obj.id) score += 6;
+        if (score > bestScore) {
+          best = obj;
+          bestScore = score;
+        }
+      }
+
+      if (!best && current && isInteractable(current)) {
+        const currentProj = project(current);
+        if (currentProj) {
+          const currentScreenDist = Math.hypot(currentProj.x - Config.W / 2, (currentProj.y - Config.H / 2) * 1.08);
+          if (currentScreenDist <= getHoverRadius(current, currentProj) * 0.8) best = current;
+        }
+      }
+
+      if (best && best.id !== State.hoverId) {
+        State.hoverLockUntil = now + Config.input.hoverLockMs;
+      }
       State.hoverId = best ? best.id : null;
+      State.edgeHintId = best && best.hintMode === "edgeArrow" ? best.id : null;
       return best;
+    }
+
+    function getScreenAngle() {
+      const screenObj = window.screen && window.screen.orientation;
+      if (screenObj && typeof screenObj.angle === "number") return screenObj.angle;
+      if (typeof window.orientation === "number") return window.orientation;
+      return 0;
     }
 
     function calibrate() {
@@ -360,8 +1108,15 @@
       State.drag.pitch = 0;
       State.targetLook.yaw = 0;
       State.targetLook.pitch = 0;
+      State.lastTargetLook.yaw = 0;
+      State.lastTargetLook.pitch = 0;
       State.look.yaw = 0;
       State.look.pitch = 0;
+      State.motion.stationaryFrames = 0;
+      State.motion.isStationary = false;
+      State.hoverId = null;
+      State.hoverLockUntil = 0;
+      State.edgeHintId = null;
       setToast("已重新居中", 1);
     }
 
@@ -370,7 +1125,8 @@
       State.orientation.beta = e.beta || 0;
       State.orientation.gamma = e.gamma || 0;
       State.orientation.has = true;
-      if (State.sensorReady) State.sensorMode = "gyro";
+      State.screenAngle = getScreenAngle();
+      if (State.sensorReady) State.sensorMode = "hybrid";
       if (State.needsCalibration && State.screen === "playing") {
         State.calibration.alpha = State.orientation.alpha;
         State.calibration.beta = State.orientation.beta;
@@ -378,16 +1134,78 @@
       }
     }
 
-    function updateLook() {
-      if (State.sensorMode === "gyro" && State.orientation.has && !State.desktopSim) {
-        State.targetLook.yaw = normDeg(State.orientation.alpha - State.calibration.alpha + State.drag.yaw);
-        State.targetLook.pitch = clamp((State.orientation.beta - State.calibration.beta) * 0.72 + State.drag.pitch, -32, 32);
-      } else {
-        State.targetLook.yaw = normDeg(State.drag.yaw);
-        State.targetLook.pitch = clamp(State.drag.pitch, -32, 32);
+    function onScreenOrientationChange() {
+      State.screenAngle = getScreenAngle();
+      if (State.screen === "playing" && State.sensorReady) {
+        calibrate();
+        setToast("视角已重新对齐", 1.2);
       }
-      State.look.yaw = normDeg(State.look.yaw + normDeg(State.targetLook.yaw - State.look.yaw) * Config.yawSmoothing);
-      State.look.pitch += (State.targetLook.pitch - State.look.pitch) * Config.pitchSmoothing;
+    }
+
+    function getOrientationTargetLook() {
+      const angle = Math.abs(State.screenAngle) === 90 ? Math.sign(State.screenAngle || 1) : 0;
+      let yaw = State.orientation.alpha - State.calibration.alpha;
+      let pitch = (State.orientation.beta - State.calibration.beta) * 0.72;
+      if (angle) {
+        yaw += State.orientation.gamma * 0.22 * angle;
+        pitch = (State.orientation.beta - State.calibration.beta) * 0.58;
+      }
+      return {
+        yaw: normDeg(yaw + State.drag.yaw),
+        pitch: clamp(pitch + State.drag.pitch, -32, 32)
+      };
+    }
+
+    function resolveInputSmoothing(speed) {
+      if (speed > Config.input.fastTurnThreshold) return Config.input.fastTurnSmoothing;
+      return State.motion.isStationary ? Config.input.idleSmoothing : Config.input.moveSmoothing;
+    }
+
+    function resolveDeadzone() {
+      return State.motion.isStationary
+        ? { yaw: Config.input.idleDeadzoneYaw, pitch: Config.input.idleDeadzonePitch }
+        : { yaw: Config.input.moveDeadzoneYaw, pitch: Config.input.moveDeadzonePitch };
+    }
+
+    function updateMotionState(nextLook) {
+      const yawDelta = angleDistance(nextLook.yaw, State.lastTargetLook.yaw);
+      const pitchDelta = Math.abs(nextLook.pitch - State.lastTargetLook.pitch);
+      const speed = yawDelta + pitchDelta * 1.15;
+      State.motion.lastTurnSpeed = speed;
+      if (speed < 0.12) State.motion.stationaryFrames += 1;
+      else State.motion.stationaryFrames = 0;
+      State.motion.isStationary = State.motion.stationaryFrames >= Config.input.stationaryFrameCount;
+      State.lastTargetLook.yaw = nextLook.yaw;
+      State.lastTargetLook.pitch = nextLook.pitch;
+    }
+
+    function updateLook() {
+      let nextLook;
+      if ((State.sensorMode === "gyro" || State.sensorMode === "hybrid") && State.orientation.has && !State.desktopSim) {
+        nextLook = getOrientationTargetLook();
+      } else {
+        nextLook = {
+          yaw: normDeg(State.drag.yaw),
+          pitch: clamp(State.drag.pitch, -32, 32)
+        };
+      }
+
+      updateMotionState(nextLook);
+      State.targetLook.yaw = nextLook.yaw;
+      State.targetLook.pitch = nextLook.pitch;
+
+      const deadzone = resolveDeadzone();
+      const smoothing = resolveInputSmoothing(State.motion.lastTurnSpeed);
+      const yawDelta = normDeg(State.targetLook.yaw - State.look.yaw);
+      const pitchDelta = State.targetLook.pitch - State.look.pitch;
+
+      if (Math.abs(yawDelta) > deadzone.yaw) {
+        State.look.yaw = normDeg(State.look.yaw + yawDelta * smoothing);
+      }
+      if (Math.abs(pitchDelta) > deadzone.pitch) {
+        State.look.pitch += pitchDelta * smoothing;
+      }
+      State.look.pitch = clamp(State.look.pitch, -32, 32);
     }
 
     async function requestMotionAndOpenHub() {
@@ -398,16 +1216,20 @@
         if (DOE && typeof DOE.requestPermission === "function") {
           const res = await DOE.requestPermission();
           if (res === "granted") {
-            State.sensorMode = "gyro";
+            State.sensorMode = "hybrid";
             State.sensorReady = true;
+            State.desktopSim = false;
+            setToast("陀螺仪已就绪，可拖动微调", 1.5);
           } else {
             State.sensorMode = "drag";
             State.desktopSim = false;
             setToast("已切换为拖动视角", 1.6);
           }
         } else if (DOE) {
-          State.sensorMode = "gyro";
+          State.sensorMode = "hybrid";
           State.sensorReady = true;
+          State.desktopSim = false;
+          setToast("陀螺仪已就绪，可拖动微调", 1.5);
         } else {
           State.sensorMode = "drag";
           State.desktopSim = true;
@@ -433,15 +1255,18 @@
         scene.data = { holding: "", feedPlaced: 0, petsDone: 0, eggsCollected: 0 };
         const eggKind = getEggQuality();
         scene.objects = [
-          { id: "hopper", kind: "hopper", label: "干草料斗", action: "拿干草", yaw: -60, pitch: -6, angle: 13 },
-          { id: "trough1", kind: "trough", label: "食槽 1", action: "放干草", yaw: 6, pitch: -18, angle: 12, filled: false },
-          { id: "trough2", kind: "trough", label: "食槽 2", action: "放干草", yaw: 26, pitch: -18, angle: 12, filled: false },
-          { id: "trough3", kind: "trough", label: "食槽 3", action: "放干草", yaw: 46, pitch: -18, angle: 12, filled: false },
-          { id: "chickA", kind: "chicken", label: "米粒", action: "摸摸", yaw: -28, baseYaw: -28, pitch: -24, angle: 16, color: "#fff6d7", pet: false, bob: 0, wander: 0, mood: "idle" },
-          { id: "chickB", kind: "chicken", label: "栗栗", action: "摸摸", yaw: 66, baseYaw: 66, pitch: -22, angle: 16, color: "#c98242", pet: false, bob: 1.8, wander: 1.1, mood: "idle" },
-          { id: "chickC", kind: "chicken", label: "小葵", action: "摸摸", yaw: -86, baseYaw: -86, pitch: -25, angle: 16, color: "#ffd85e", pet: false, bob: 3, wander: 2.2, mood: "idle" },
-          { id: "egg1", kind: "egg", label: eggKind === "silverEgg" ? "银星蛋" : "普通蛋", action: "拾取", yaw: -42, pitch: -35, angle: 14, collected: false, quality: eggKind },
-          { id: "egg2", kind: "egg", label: eggKind === "silverEgg" ? "银星蛋" : "普通蛋", action: "拾取", yaw: 90, pitch: -34, angle: 14, collected: false, quality: eggKind }
+          { id: "dustWindow", kind: "dust", label: "", yaw: 4, pitch: 8, depthBand: "fx", interactable: false, sparkle: 0, distance: 8.8, height: 2.18 },
+          { id: "hayBits", kind: "hayBits", label: "", yaw: -44, pitch: -14, depthBand: "fx", interactable: false, sparkle: 1.2, distance: 4.8, height: 0.52 },
+          { id: "rareGlint", kind: "glint", label: "", yaw: 86, pitch: -30, depthBand: "fx", interactable: false, pulse: 0.3, distance: 4.35, height: 0.26 },
+          { id: "hopper", kind: "hopper", label: "干草料斗", action: "拿干草", yaw: -48, pitch: -8, angle: 13, enterAngle: 13, exitAngle: 10, priority: 90, depthBand: "near", hintMode: "highlight", distance: 4.15, height: 0.74 },
+          { id: "trough1", kind: "trough", label: "食槽 1", action: "放干草", yaw: 6, pitch: -18, angle: 12, enterAngle: 12, exitAngle: 9, priority: 88, depthBand: "near", hintMode: "highlight", filled: false, distance: 3.38, height: 0.14 },
+          { id: "trough2", kind: "trough", label: "食槽 2", action: "放干草", yaw: 26, pitch: -18, angle: 12, enterAngle: 12, exitAngle: 9, priority: 86, depthBand: "near", hintMode: "highlight", filled: false, distance: 3.58, height: 0.14 },
+          { id: "trough3", kind: "trough", label: "食槽 3", action: "放干草", yaw: 46, pitch: -18, angle: 12, enterAngle: 12, exitAngle: 9, priority: 84, depthBand: "near", hintMode: "highlight", filled: false, distance: 3.82, height: 0.14 },
+          { id: "chickA", kind: "chicken", label: "米粒", action: "摸摸", yaw: -28, baseYaw: -28, pitch: -24, angle: 16, enterAngle: 15, exitAngle: 12, priority: 95, depthBand: "near", hintMode: "highlight", color: "#fff6d7", spriteTint: "#fff8e8", turnBias: 1, faceOffset: 0, pet: false, bob: 0, wander: 0, mood: "idle", distance: 3.26, height: 0 },
+          { id: "chickB", kind: "chicken", label: "栗栗", action: "摸摸", yaw: 64, baseYaw: 64, pitch: -22, angle: 16, enterAngle: 15, exitAngle: 12, priority: 92, depthBand: "near", hintMode: "highlight", color: "#c98242", spriteTint: "#f4d6aa", turnBias: -1, faceOffset: 0, pet: false, bob: 1.8, wander: 1.1, mood: "idle", distance: 3.62, height: 0 },
+          { id: "chickC", kind: "chicken", label: "小葵", action: "摸摸", yaw: -84, baseYaw: -84, pitch: -25, angle: 16, enterAngle: 15, exitAngle: 12, priority: 89, depthBand: "near", hintMode: "edgeArrow", color: "#ffd85e", spriteTint: "#fff29a", turnBias: 1, faceOffset: 0, pet: false, bob: 3, wander: 2.2, mood: "idle", distance: 3.88, height: 0 },
+          { id: "egg1", kind: "egg", label: eggKind === "silverEgg" ? "银星蛋" : "普通蛋", action: "拾取", yaw: -40, pitch: -35, angle: 14, enterAngle: 13, exitAngle: 10, priority: 83, depthBand: "near", hintMode: "highlight", collected: false, quality: eggKind, distance: 3.06, height: 0.02 },
+          { id: "egg2", kind: "egg", label: eggKind === "silverEgg" ? "银星蛋" : "普通蛋", action: "拾取", yaw: 88, pitch: -34, angle: 14, enterAngle: 13, exitAngle: 10, priority: 82, depthBand: "near", hintMode: "edgeArrow", collected: false, quality: eggKind, distance: 3.48, height: 0.02 }
         ];
       } else if (id === "dock") {
         scene.data = {
@@ -458,27 +1283,43 @@
           catches: 0
         };
         scene.objects = [
-          { id: "spot1", kind: "spot", label: "左侧水花", action: "抛竿", yaw: -58, pitch: -12, angle: 15 },
-          { id: "spot2", kind: "spot", label: "近岸水花", action: "抛竿", yaw: 12, pitch: -14, angle: 15 },
-          { id: "spot3", kind: "spot", label: "远处水花", action: "抛竿", yaw: 78, pitch: -13, angle: 15 }
+          { id: "boatFar", kind: "boat", label: "", yaw: 28, pitch: -4, depthBand: "far", interactable: false, bob: 0, distance: 13.6, height: 0.24 },
+          { id: "postLeft", kind: "post", label: "", yaw: -36, pitch: -10, depthBand: "mid", interactable: false, distance: 5.95, height: 0 },
+          { id: "postRight", kind: "post", label: "", yaw: 38, pitch: -10, depthBand: "mid", interactable: false, distance: 6.18, height: 0 },
+          { id: "netProp", kind: "net", label: "", yaw: -42, pitch: -17, depthBand: "mid", interactable: false, distance: 5.42, height: 0.28 },
+          { id: "waterGlimmer", kind: "glimmer", label: "", yaw: 8, pitch: -11, depthBand: "fx", interactable: false, pulse: 0.5, distance: 4.55, height: 0.05 },
+          { id: "cueBubbleRight", kind: "cuePulse", label: "", yaw: 82, pitch: -12, depthBand: "fx", interactable: false, pulse: 1.1, distance: 6.1, height: 0.88 },
+          { id: "cueGullLeft", kind: "cuePulse", label: "", yaw: -74, pitch: 10, depthBand: "fx", interactable: false, pulse: 2.1, distance: 6.4, height: 1.92 },
+          { id: "spot1", kind: "spot", label: "左侧水花", action: "抛竿", yaw: -58, pitch: -12, angle: 15, enterAngle: 14, exitAngle: 11, priority: 95, depthBand: "near", hintMode: "highlight", distance: 5.18, height: 0.03 },
+          { id: "spot2", kind: "spot", label: "近岸水花", action: "抛竿", yaw: 12, pitch: -14, angle: 15, enterAngle: 14, exitAngle: 11, priority: 97, depthBand: "near", hintMode: "highlight", distance: 4.22, height: 0.03 },
+          { id: "spot3", kind: "spot", label: "远处水花", action: "抛竿", yaw: 76, pitch: -13, angle: 15, enterAngle: 14, exitAngle: 11, priority: 92, depthBand: "near", hintMode: "edgeArrow", distance: 5.62, height: 0.03 }
         ];
       } else if (id === "orchard") {
         scene.data = { holding: "", sorted: 0, jamDone: 0, honey: false };
         scene.objects = [
-          { id: "tree1", kind: "tree", label: "苹果树", action: "摇一摇", yaw: -70, pitch: -12, angle: 18, shaken: false },
-          { id: "tree2", kind: "tree", label: "野莓树", action: "摇一摇", yaw: 4, pitch: -10, angle: 18, shaken: false },
-          { id: "tree3", kind: "tree", label: "杏果树", action: "摇一摇", yaw: 76, pitch: -12, angle: 18, shaken: false },
-          { id: "hive", kind: "hive", label: "蜂箱", action: "收蜂蜜", yaw: -36, pitch: -10, angle: 14, taken: false },
-          { id: "crate", kind: "crateGood", label: "完好果筐", action: "放入好果", yaw: -14, pitch: -21, angle: 14 },
-          { id: "press", kind: "press", label: "压榨桶", action: "做成果酱", yaw: 46, pitch: -21, angle: 14 }
+          { id: "fenceLeft", kind: "fence", label: "", yaw: -46, pitch: -10, depthBand: "mid", interactable: false },
+          { id: "fenceRight", kind: "fence", label: "", yaw: 44, pitch: -10, depthBand: "mid", interactable: false },
+          { id: "beeFx", kind: "beeFx", label: "", yaw: -26, pitch: 2, depthBand: "fx", interactable: false, pulse: 0.8 },
+          { id: "leafFx", kind: "leafFx", label: "", yaw: 12, pitch: 6, depthBand: "fx", interactable: false, pulse: 1.4 },
+          { id: "dropGlint", kind: "glint", label: "", yaw: 70, pitch: -18, depthBand: "fx", interactable: false, pulse: 0.4 },
+          { id: "tree1", kind: "tree", label: "苹果树", action: "摇一摇", yaw: -68, pitch: -12, angle: 18, enterAngle: 16, exitAngle: 12, priority: 90, depthBand: "near", hintMode: "highlight", shaken: false },
+          { id: "tree2", kind: "tree", label: "野莓树", action: "摇一摇", yaw: 4, pitch: -10, angle: 18, enterAngle: 16, exitAngle: 12, priority: 96, depthBand: "near", hintMode: "highlight", shaken: false },
+          { id: "tree3", kind: "tree", label: "杏果树", action: "摇一摇", yaw: 74, pitch: -12, angle: 18, enterAngle: 16, exitAngle: 12, priority: 88, depthBand: "near", hintMode: "edgeArrow", shaken: false },
+          { id: "hive", kind: "hive", label: "蜂箱", action: "收蜂蜜", yaw: -34, pitch: -10, angle: 14, enterAngle: 12, exitAngle: 9, priority: 80, depthBand: "near", hintMode: "highlight", taken: false },
+          { id: "crate", kind: "crateGood", label: "完好果筐", action: "放入好果", yaw: -14, pitch: -21, angle: 14, enterAngle: 12, exitAngle: 9, priority: 82, depthBand: "near", hintMode: "highlight" },
+          { id: "press", kind: "press", label: "压榨桶", action: "做成果酱", yaw: 46, pitch: -21, angle: 14, enterAngle: 12, exitAngle: 9, priority: 84, depthBand: "near", hintMode: "highlight" }
         ];
       } else if (id === "market") {
         scene.data = { panel: false, actions: 0, earned: 0 };
         scene.objects = [
-          { id: "board", kind: "board", label: "订单公告板", action: "查看订单", yaw: 2, pitch: -16, angle: 16 },
-          { id: "stallGrocer", kind: "stallGrocer", label: "杂货摊", action: "快速出售", yaw: -70, pitch: -10, angle: 15 },
-          { id: "stallFish", kind: "stallFish", label: "鱼贩摊", action: "快速出售", yaw: 72, pitch: -10, angle: 15 },
-          { id: "stallCraft", kind: "stallCraft", label: "手作摊", action: "快速出售", yaw: 38, pitch: -11, angle: 15 }
+          { id: "lightFx", kind: "glowOrb", label: "", yaw: 4, pitch: 8, depthBand: "fx", interactable: false, pulse: 0.3 },
+          { id: "flagFx", kind: "flagFx", label: "", yaw: 26, pitch: 16, depthBand: "fx", interactable: false, pulse: 1.1 },
+          { id: "boxCluster", kind: "boxCluster", label: "", yaw: -22, pitch: -18, depthBand: "mid", interactable: false },
+          { id: "vendorCueLeft", kind: "cuePulse", label: "", yaw: -74, pitch: -8, depthBand: "fx", interactable: false, pulse: 1.6 },
+          { id: "board", kind: "board", label: "订单公告板", action: "查看订单", yaw: 2, pitch: -16, angle: 16, enterAngle: 15, exitAngle: 12, priority: 98, depthBand: "near", hintMode: "highlight" },
+          { id: "stallGrocer", kind: "stallGrocer", label: "杂货摊", action: "快速出售", yaw: -70, pitch: -10, angle: 15, enterAngle: 14, exitAngle: 11, priority: 88, depthBand: "near", hintMode: "edgeArrow" },
+          { id: "stallFish", kind: "stallFish", label: "鱼贩摊", action: "快速出售", yaw: 72, pitch: -10, angle: 15, enterAngle: 14, exitAngle: 11, priority: 88, depthBand: "near", hintMode: "edgeArrow" },
+          { id: "stallCraft", kind: "stallCraft", label: "手作摊", action: "快速出售", yaw: 38, pitch: -11, angle: 15, enterAngle: 14, exitAngle: 11, priority: 84, depthBand: "near", hintMode: "highlight" }
         ];
       }
       return scene;
@@ -489,12 +1330,14 @@
       State.currentScene = createScene(id);
       State.result = null;
       State.screen = "playing";
-      State.needsCalibration = State.sensorMode === "gyro";
+      State.needsCalibration = State.sensorReady && !State.desktopSim;
       calibrate();
+      if (World.ready) World.loadScene(State.currentScene);
       setToast(`${SceneMeta[id].name} · ${SceneMeta[id].core}`, 2.1);
     }
 
     function leaveScene() {
+      if (World.ready) World.unloadScene();
       State.currentScene = null;
       State.screen = "hub";
       State.result = null;
@@ -541,6 +1384,10 @@
 
     function updateDockScene(scene, dt) {
       const d = scene.data;
+      const cueLeft = scene.objects.find(o => o.id === "cueGullLeft");
+      const cueRight = scene.objects.find(o => o.id === "cueBubbleRight");
+      if (cueLeft) cueLeft.hidden = !(d.phase === "search" && d.activeId === "spot1");
+      if (cueRight) cueRight.hidden = !(d.phase === "search" && d.activeId === "spot3");
       if (d.phase === "wait") {
         d.wait -= dt;
         if (d.wait <= 0) {
@@ -591,19 +1438,28 @@
       }
     }
 
-    function updateCoopScene(scene, dt) {
-      for (const chick of scene.objects.filter(o => o.kind === "chicken")) {
-        chick.bob += dt * 3.2;
-        chick.wander += dt;
-        chick.yaw = normDeg(chick.baseYaw + Math.sin(chick.wander * 0.68) * (chick.mood === "eat" ? 2.4 : 5));
-        if (chick.mood === "happy" && Math.random() < dt * 0.5) {
-          const p = project(chick);
-          if (p) burstHearts(p.x, p.y - 36);
+      function updateCoopScene(scene, dt) {
+        const eggRight = scene.objects.find(o => o.id === "egg2");
+        const glint = scene.objects.find(o => o.id === "rareGlint");
+        if (glint && eggRight) glint.hidden = !!eggRight.collected;
+        for (const chick of scene.objects.filter(o => o.kind === "chicken")) {
+          chick.bob += dt * 3.2;
+          chick.wander += dt;
+          chick.yaw = normDeg(chick.baseYaw + Math.sin(chick.wander * 0.68) * (chick.mood === "eat" ? 2.4 : 5));
+          const poseBias = chick.mood === "eat" ? 78 : chick.mood === "happy" ? 42 : 0;
+          const poseSwing = chick.mood === "eat" ? 10 : chick.mood === "happy" ? 20 : 26;
+          chick.faceOffset = clamp((chick.turnBias || 1) * poseBias + Math.sin(chick.wander * 1.1 + (chick.bob || 0) * 0.18) * poseSwing, -160, 160);
+          if (chick.mood === "happy" && Math.random() < dt * 0.5) {
+            const p = project(chick);
+            if (p) burstHearts(p.x, p.y - 36);
+          }
         }
-      }
     }
 
     function updateOrchardScene(scene, dt) {
+      const tree3 = scene.objects.find(o => o.id === "tree3");
+      const glint = scene.objects.find(o => o.id === "dropGlint");
+      if (glint && tree3) glint.hidden = !!tree3.shaken;
       for (const fruit of scene.objects.filter(o => o.kind === "fruit")) {
         fruit.bounce = (fruit.bounce || 0) + dt * 5;
       }
@@ -722,7 +1578,8 @@
     }
 
     function finishCoopScene(scene) {
-      finishScene(true, "照料、陪伴、拾蛋这条治愈回路已经能直接体验。", [getEggQuality() === "silverEgg" ? "银星蛋 +2" : "鸡蛋 +2", "三只小鸡好感提升"]);
+      const silverCount = scene.objects.filter((obj) => obj.kind === "egg" && obj.quality === "silverEgg").length;
+      finishScene(true, "照料、陪伴、拾蛋这条治愈回路已经能直接体验。", [silverCount > 0 ? "银星蛋 +2" : "鸡蛋 +2", "三只小鸡好感提升"]);
     }
 
     function spawnOrchardFruit(scene, baseYaw, goodFirst) {
@@ -939,6 +1796,7 @@
     function update(dt) {
       updateLook();
       if (State.screen === "playing") updateScene(dt);
+      if (World.ready && State.screen === "playing" && State.currentScene) World.update(State.currentScene, dt);
 
       for (let i = State.particles.length - 1; i >= 0; i--) {
         const p = State.particles[i];
@@ -1067,7 +1925,11 @@
     }
     function drawSceneObjects() {
       const ordered = getSceneObjects().map((o) => ({ o, p: project(o) })).filter((entry) => entry.p);
-      ordered.sort((a, b) => a.p.y - b.p.y);
+      ordered.sort((a, b) => {
+        const depthDiff = (Config.depthWeight[depthBandOf(a.o)] || 0) - (Config.depthWeight[depthBandOf(b.o)] || 0);
+        if (depthDiff !== 0) return depthDiff;
+        return a.p.y - b.p.y;
+      });
       for (const entry of ordered) {
         const hover = State.hoverId === entry.o.id;
         ctx.save();
@@ -1075,7 +1937,7 @@
         ctx.scale(entry.p.scale, entry.p.scale);
         if (hover) drawGlow(entry.o);
         drawObject(entry.o);
-        if (hover && State.currentScene.id !== "market") drawObjectLabel(entry.o);
+        if (hover && isInteractable(entry.o) && State.currentScene.id !== "market") drawObjectLabel(entry.o);
         ctx.restore();
       }
     }
@@ -1084,7 +1946,7 @@
       ctx.save();
       ctx.globalAlpha = 0.5 + Math.sin(performance.now() * 0.008) * 0.14;
       ctx.fillStyle = "#fff2a6";
-      const r = obj.kind === "tree" ? 40 : obj.kind === "chicken" ? 34 : 26;
+      const r = obj.kind === "tree" ? 40 : obj.kind === "chicken" ? 34 : obj.kind === "board" ? 32 : 26;
       ctx.beginPath();
       ctx.ellipse(0, 4, r, r * 0.7, 0, 0, Math.PI * 2);
       ctx.fill();
@@ -1093,6 +1955,20 @@
 
     function drawObject(obj) {
       switch (obj.kind) {
+        case "dust": return drawDust(obj);
+        case "hayBits": return drawHayBits(obj);
+        case "glint": return drawGlint(obj);
+        case "cuePulse": return drawCuePulse(obj);
+        case "boat": return drawBoat(obj);
+        case "post": return drawPost(obj);
+        case "net": return drawNet(obj);
+        case "fence": return drawFence(obj);
+        case "beeFx": return drawBeeFx(obj);
+        case "leafFx": return drawLeafFx(obj);
+        case "glowOrb": return drawGlowOrb(obj);
+        case "flagFx": return drawFlagFx(obj);
+        case "boxCluster": return drawBoxCluster(obj);
+        case "glimmer": return drawGlimmer(obj);
         case "spot": return drawFishSpot(obj);
         case "hopper": return drawHopper();
         case "trough": return drawTrough(obj);
@@ -1116,6 +1992,93 @@
       for (let i = 0; i < 3; i++) {
         ctx.beginPath();
         ctx.ellipse(0, i * 3, 22 - i * 5, 7 - i, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    function drawDust(obj) {
+      const t = performance.now() * 0.001 + (obj.sparkle || 0);
+      for (let i = 0; i < 6; i++) {
+        ctx.fillStyle = `rgba(255,244,220,${0.18 + Math.sin(t + i) * 0.08})`;
+        ctx.beginPath();
+        ctx.arc(Math.sin(t * 1.2 + i * 0.7) * 18, Math.cos(t * 0.9 + i) * 10, 2 + (i % 2), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    function drawHayBits(obj) {
+      const t = performance.now() * 0.001 + (obj.sparkle || 0);
+      ctx.strokeStyle = "rgba(222,185,94,0.7)";
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 5; i++) {
+        const x = -20 + i * 9;
+        ctx.beginPath();
+        ctx.moveTo(x, -4 + Math.sin(t + i) * 2);
+        ctx.lineTo(x + 8, -12 + Math.cos(t + i * 0.6) * 2);
+        ctx.stroke();
+      }
+    }
+    function drawGlint(obj) {
+      const t = performance.now() * 0.004 + (obj.pulse || 0);
+      ctx.save();
+      ctx.rotate(t);
+      ctx.strokeStyle = "rgba(255,244,186,0.9)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-10, 0); ctx.lineTo(10, 0);
+      ctx.moveTo(0, -10); ctx.lineTo(0, 10);
+      ctx.stroke();
+      ctx.restore();
+    }
+    function drawCuePulse(obj) {
+      const t = performance.now() * 0.004 + (obj.pulse || 0);
+      ctx.strokeStyle = `rgba(255,232,159,${0.36 + Math.sin(t) * 0.18})`;
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 2; i++) {
+        ctx.beginPath();
+        ctx.arc(0, 0, 10 + i * 8 + Math.sin(t + i) * 1.6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    function drawBoat(obj) {
+      ctx.translate(0, Math.sin(performance.now() * 0.001 + (obj.bob || 0)) * 2);
+      ctx.fillStyle = "#6d5a49";
+      ctx.beginPath();
+      ctx.moveTo(-24, 8);
+      ctx.lineTo(24, 8);
+      ctx.lineTo(16, 20);
+      ctx.lineTo(-18, 20);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#f0e6d0";
+      ctx.beginPath();
+      ctx.moveTo(2, -22);
+      ctx.lineTo(2, 10);
+      ctx.lineTo(18, 0);
+      ctx.closePath();
+      ctx.fill();
+    }
+    function drawPost() {
+      ctx.fillStyle = "#8b6849";
+      ctx.fillRect(-6, -22, 12, 56);
+      ctx.strokeStyle = "rgba(240,214,176,0.35)";
+      ctx.beginPath();
+      ctx.moveTo(4, -4);
+      ctx.lineTo(24, 6);
+      ctx.stroke();
+    }
+    function drawNet() {
+      ctx.strokeStyle = "rgba(205,196,170,0.72)";
+      ctx.lineWidth = 2;
+      roundRect(-24, -18, 48, 36, 8, false, true);
+      for (let x = -16; x <= 16; x += 8) {
+        ctx.beginPath();
+        ctx.moveTo(x, -18);
+        ctx.lineTo(x, 18);
+        ctx.stroke();
+      }
+      for (let y = -10; y <= 10; y += 8) {
+        ctx.beginPath();
+        ctx.moveTo(-24, y);
+        ctx.lineTo(24, y);
         ctx.stroke();
       }
     }
@@ -1213,6 +2176,20 @@
         ctx.beginPath(); ctx.arc(8, -10, 5, 0, Math.PI * 2); ctx.fill();
       }
     }
+    function drawFence() {
+      ctx.strokeStyle = "#8f6d49";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(-28, 0);
+      ctx.lineTo(28, 0);
+      ctx.moveTo(-20, -10);
+      ctx.lineTo(-20, 16);
+      ctx.moveTo(0, -10);
+      ctx.lineTo(0, 16);
+      ctx.moveTo(20, -10);
+      ctx.lineTo(20, 16);
+      ctx.stroke();
+    }
     function drawHive(obj) {
       ctx.fillStyle = obj.taken ? "#8d6a49" : "#cfab58";
       roundRect(-20, -26, 40, 54, 10, true);
@@ -1250,6 +2227,37 @@
       ctx.fillStyle = "#7b5d30";
       ctx.fillRect(-1, -16, 3, 8);
     }
+    function drawBeeFx(obj) {
+      const t = performance.now() * 0.003 + (obj.pulse || 0);
+      for (let i = 0; i < 3; i++) {
+        const x = Math.cos(t + i * 2.1) * (10 + i * 7);
+        const y = Math.sin(t * 1.4 + i) * 6;
+        ctx.fillStyle = "#f7d768";
+        ctx.beginPath();
+        ctx.arc(x, y, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.65)";
+        ctx.beginPath();
+        ctx.moveTo(x - 2, y - 2);
+        ctx.lineTo(x + 2, y - 4);
+        ctx.moveTo(x - 2, y + 2);
+        ctx.lineTo(x + 2, y + 4);
+        ctx.stroke();
+      }
+    }
+    function drawLeafFx(obj) {
+      const t = performance.now() * 0.0015 + (obj.pulse || 0);
+      ctx.fillStyle = "rgba(255,208,120,0.82)";
+      for (let i = 0; i < 4; i++) {
+        ctx.save();
+        ctx.translate(Math.sin(t + i * 0.9) * 18, Math.cos(t * 1.4 + i) * 10);
+        ctx.rotate(Math.sin(t + i) * 0.8);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 5, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
     function drawBoard() {
       ctx.fillStyle = "#7d5638";
       roundRect(-32, -38, 64, 76, 8, true);
@@ -1265,6 +2273,47 @@
       roundRect(-28, -34, 56, 14, 6, true);
       safeText(tag, 0, 2, 16, "#46301e");
     }
+    function drawGlowOrb(obj) {
+      const t = performance.now() * 0.003 + (obj.pulse || 0);
+      ctx.fillStyle = `rgba(255,223,150,${0.3 + Math.sin(t) * 0.12})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, 14 + Math.sin(t * 1.2) * 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    function drawFlagFx(obj) {
+      const t = performance.now() * 0.004 + (obj.pulse || 0);
+      ctx.strokeStyle = "rgba(255,239,210,0.6)";
+      ctx.beginPath();
+      ctx.moveTo(0, -20);
+      ctx.lineTo(0, 12);
+      ctx.stroke();
+      ctx.fillStyle = "#d98f5f";
+      ctx.beginPath();
+      ctx.moveTo(0, -18);
+      ctx.lineTo(18 + Math.sin(t) * 4, -12);
+      ctx.lineTo(0, -6);
+      ctx.closePath();
+      ctx.fill();
+    }
+    function drawBoxCluster() {
+      drawCrate({}, "#94663f", "");
+      ctx.save();
+      ctx.translate(-22, 10);
+      drawCrate({}, "#ad7b4c", "");
+      ctx.restore();
+      ctx.save();
+      ctx.translate(18, 8);
+      drawCrate({}, "#7d5737", "");
+      ctx.restore();
+    }
+    function drawGlimmer(obj) {
+      const t = performance.now() * 0.003 + (obj.pulse || 0);
+      ctx.strokeStyle = `rgba(255,255,255,${0.28 + Math.sin(t) * 0.16})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 24 + Math.sin(t) * 3, 7, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     function drawObjectLabel(obj) {
       ctx.fillStyle = "rgba(55,34,25,0.78)";
       const w = obj.kind === "chicken" ? 120 : 90;
@@ -1276,7 +2325,8 @@
     function drawCrosshair() {
       ctx.save();
       ctx.translate(Config.W / 2, Config.H / 2);
-      ctx.strokeStyle = State.hoverId ? "#fff1a2" : "rgba(255,255,255,0.74)";
+      const pulse = 0.5 + Math.sin(performance.now() * 0.01) * 0.12;
+      ctx.strokeStyle = State.hoverId ? "#fff1a2" : State.edgeHintId ? `rgba(255,241,162,${0.58 + pulse * 0.18})` : "rgba(255,255,255,0.74)";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(0, 0, 9, 0, Math.PI * 2);
@@ -1285,6 +2335,10 @@
       ctx.moveTo(0, -16); ctx.lineTo(0, -7);
       ctx.moveTo(0, 7); ctx.lineTo(0, 16);
       ctx.stroke();
+      ctx.fillStyle = State.hoverId ? "#fff6cf" : "rgba(255,255,255,0.42)";
+      ctx.beginPath();
+      ctx.arc(0, 0, 2, 0, Math.PI * 2);
+      ctx.fill();
       ctx.restore();
     }
 
@@ -1299,12 +2353,13 @@
       safeText(`${State.save.weather} · ${State.save.stamina}体力`, 258, 49, 11, "#ffe4a5");
       safeText(Config.version, 322, 49, 11, "#d4bf91");
       drawSceneProgress();
+      drawModeBadge();
       drawHoldingBadge();
       drawCrosshair();
       drawObjectiveGuide();
       drawButton("地图", 16, 584, 64, 34);
       drawButton("居中", 90, 584, 64, 34);
-      drawButton(State.desktopSim ? "电脑测试" : State.sensorMode === "gyro" ? "陀螺仪+拖动" : "拖动", 202, 584, 142, 34);
+      drawButton(State.desktopSim ? "电脑测试" : State.sensorMode === "hybrid" ? "陀螺仪+微调" : "拖动", 202, 584, 142, 34);
     }
 
     function drawHoldingBadge() {
@@ -1331,6 +2386,17 @@
       safeText(text, 180, 95, 12, "#fff1c2");
     }
 
+    function drawModeBadge() {
+      const label = State.desktopSim ? "电脑拖动" : State.sensorMode === "hybrid" ? "陀螺仪 + 微调" : "拖动模式";
+      const sub = State.motion.isStationary ? "稳" : "动";
+      ctx.fillStyle = "rgba(255, 239, 196, 0.16)";
+      roundRect(230, 114, 110, 24, 9, true);
+      safeText(label, 280, 126, 10, "#ffe4a8");
+      ctx.fillStyle = State.motion.isStationary ? "rgba(141, 211, 156, 0.94)" : "rgba(255, 203, 124, 0.94)";
+      roundRect(316, 116, 18, 18, 6, true);
+      safeText(sub, 325, 125, 9, "#4b2f1e");
+    }
+
     function drawObjectiveGuide() {
       const guide = getSceneHint();
       if (!guide || !guide.obj) return;
@@ -1344,22 +2410,7 @@
       roundRect(34, 116, 292, 30, 11, true);
       safeText(guide.text, 180, 131, 12, "#fff1c2");
       if (offscreen) {
-        const left = delta < 0;
-        const x = left ? 28 : 332;
-        const y = 320;
-        ctx.fillStyle = "rgba(255,232,159,0.92)";
-        ctx.beginPath();
-        if (left) {
-          ctx.moveTo(x - 12, y);
-          ctx.lineTo(x + 10, y - 16);
-          ctx.lineTo(x + 10, y + 16);
-        } else {
-          ctx.moveTo(x + 12, y);
-          ctx.lineTo(x - 10, y - 16);
-          ctx.lineTo(x - 10, y + 16);
-        }
-        ctx.closePath();
-        ctx.fill();
+        drawDirectionalArrow(delta < 0, 320, true);
       } else if (Math.abs(yDelta) > 8) {
         const x = Config.W / 2 + (delta / (Config.fov / 2)) * (Config.W / 2);
         const y = yDelta > 0 ? 168 : 486;
@@ -1377,7 +2428,35 @@
         ctx.closePath();
         ctx.fill();
       }
+      drawPeripheralCueHints(guide.obj.id);
       ctx.restore();
+    }
+
+    function drawDirectionalArrow(left, y, strong = false) {
+      const x = left ? 28 : 332;
+      ctx.fillStyle = strong ? "rgba(255,232,159,0.92)" : "rgba(255,232,159,0.56)";
+      ctx.beginPath();
+      if (left) {
+        ctx.moveTo(x - 12, y);
+        ctx.lineTo(x + 10, y - 16);
+        ctx.lineTo(x + 10, y + 16);
+      } else {
+        ctx.moveTo(x + 12, y);
+        ctx.lineTo(x - 10, y - 16);
+        ctx.lineTo(x - 10, y + 16);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawPeripheralCueHints(guideId) {
+      const sceneObjects = getSceneObjects().filter((obj) => obj.hintMode === "edgeArrow" && obj.id !== guideId && obj.id !== State.hoverId);
+      for (const obj of sceneObjects) {
+        const delta = normDeg(obj.yaw - State.look.yaw);
+        const abs = Math.abs(delta);
+        if (abs <= Config.fov / 2 - 6 || abs > 118) continue;
+        drawDirectionalArrow(delta < 0, 360 + Math.sin(performance.now() * 0.008 + abs) * 5, false);
+      }
     }
 
     function drawSceneOverlay() {
@@ -1526,7 +2605,7 @@
 
       drawButton("睡到明天", 34, 570, 104, 40, true);
       drawButton("返回首页", 148, 570, 92, 40);
-      drawButton(State.desktopSim ? "电脑测试中" : State.sensorMode === "gyro" ? "陀螺仪已开" : "拖动模式", 250, 570, 94, 40);
+      drawButton(State.desktopSim ? "电脑测试中" : State.sensorMode === "hybrid" ? "陀螺仪已开" : "拖动模式", 250, 570, 94, 40);
     }
 
     function formatInventorySummary() {
@@ -1573,11 +2652,14 @@
 
     function render() {
       ctx.clearRect(0, 0, Config.W, Config.H);
+      World.render(State.screen === "playing");
       if (State.screen === "menu") drawMenu();
       else if (State.screen === "hub") drawHub();
       else if (State.screen === "playing") {
-        drawBackgroundForScene();
-        drawSceneObjects();
+        if (!World.ready) {
+          drawBackgroundForScene();
+          drawSceneObjects();
+        }
         drawParticles();
         drawHud();
         drawSceneOverlay();
@@ -1620,12 +2702,12 @@
       const p = getPoint(e);
       const dx = p.x - State.drag.x;
       const dy = p.y - State.drag.y;
-      if (Math.hypot(dx, dy) > 2) State.drag.moved = true;
+      if (Math.hypot(dx, dy) > Config.input.dragThresholdPx) State.drag.moved = true;
       State.drag.x = p.x;
       State.drag.y = p.y;
       if (State.drag.canPan) {
-        State.drag.yaw = normDeg(State.drag.yaw - dx * 0.32);
-        State.drag.pitch = clamp(State.drag.pitch + dy * 0.11, -32, 32);
+        State.drag.yaw = normDeg(State.drag.yaw - dx * Config.input.dragYawScale);
+        State.drag.pitch = clamp(State.drag.pitch + dy * Config.input.dragPitchScale, -32, 32);
       }
     }
 
@@ -1699,6 +2781,7 @@
           return;
         }
         if (hit(x, y, 94, 510, 172, 40)) {
+          if (World.ready) World.unloadScene();
           State.currentScene = null;
           State.result = null;
           State.screen = "hub";
@@ -1722,7 +2805,18 @@
     function init() {
       try {
         loadSave();
+        State.screenAngle = getScreenAngle();
+        try {
+          World.init();
+        } catch (err) {
+          console.warn("3D world init failed, fallback to canvas scene.", err);
+        }
         window.addEventListener("deviceorientation", onOrientation, true);
+        if (window.screen && window.screen.orientation && typeof window.screen.orientation.addEventListener === "function") {
+          window.screen.orientation.addEventListener("change", onScreenOrientationChange);
+        } else {
+          window.addEventListener("orientationchange", onScreenOrientationChange, true);
+        }
         canvas.addEventListener("pointerdown", pointerDown, { passive: false });
         canvas.addEventListener("pointermove", pointerMove, { passive: false });
         canvas.addEventListener("pointerup", pointerUp, { passive: false });
