@@ -55,21 +55,22 @@
       version: "v1.0",
       W: 360,
       H: 640,
-      fov: 96,
-      pitchScale: 5.2,
-      yawSmoothing: 0.08,
-      pitchSmoothing: 0.08,
+      fov: 100,
+      pitchScale: 4.8,
+      yawSmoothing: 0.1,
+      pitchSmoothing: 0.1,
       gameSeconds: 90,
       errorText: "哎呀，出错了，请重启试试吧~",
       tasks: { hay: 3, pets: 3, eggs: 2 },
-      storageKey: "morning-coop-save-v1"
+      storageKey: "morning-coop-save-v1",
+      pitchRange: 55
     };
 
     const canvas = document.getElementById("gameCanvas");
     const ctx = canvas.getContext("2d");
 
     const State = {
-      screen: "menu",
+      screen: "boot",
       sensorMode: "drag",
       desktopSim: false,
       sensorReady: false,
@@ -108,12 +109,19 @@
     const Assets = {
       loaded: false,
       imgs: {},
+      frames: {
+        idle: ["idle_011", "idle_012"],
+        happy: ["happy_017","happy_018","happy_019","happy_020","happy_021","happy_022","happy_023","happy_024","happy_025","happy_026","happy_027","happy_028","happy_029","happy_030","happy_031","happy_032","happy_033","happy_034","happy_035","happy_036","happy_037","happy_038","happy_039"],
+        peck: ["peck_040","peck_041","peck_042","peck_043","peck_044","peck_045","peck_046","peck_047","peck_048","peck_049","peck_050","peck_051","peck_052","peck_053","peck_054","peck_055","peck_056","peck_057","peck_058","peck_059","peck_060","peck_061","peck_062","peck_063"],
+        dir: ["方向图_000","方向图_001","方向图_002","方向图_003","方向图_004","方向图_005"]
+      },
       load() {
         const list = [
           "chicken_white", "chicken_brown", "chicken_yellow",
           "egg_normal", "egg_silver", "egg_gold", "egg_rare",
           "hopper", "trough_empty", "trough_filled"
         ];
+        Object.values(Assets.frames).forEach(arr => arr.forEach(name => list.push(`小鸡状态图/${name}`)));
         let count = 0;
         return new Promise(resolve => {
           list.forEach(name => {
@@ -242,9 +250,9 @@
         { id: "trough1", type: "trough", label: "食槽 1", action: "放干草", yaw: 4, pitch: -18, angle: 13, state: "empty" },
         { id: "trough2", type: "trough", label: "食槽 2", action: "放干草", yaw: 24, pitch: -18, angle: 13, state: "empty" },
         { id: "trough3", type: "trough", label: "食槽 3", action: "放干草", yaw: 44, pitch: -18, angle: 13, state: "empty" },
-        { id: "chickA", type: "chicken", label: "米粒", action: "摸摸", yaw: -24, baseYaw: -24, pitch: -24, angle: 17, state: "idle", color: "#fff6d7", pet: false, bob: 0, wander: 0 },
-        { id: "chickB", type: "chicken", label: "栗栗", action: "摸摸", yaw: 64, baseYaw: 64, pitch: -22, angle: 17, state: "idle", color: "#c98242", pet: false, bob: 1.7, wander: 1.2 },
-        { id: "chickC", type: "chicken", label: "小葵", action: "摸摸", yaw: -84, baseYaw: -84, pitch: -25, angle: 17, state: "idle", color: "#ffd85e", pet: false, bob: 3.1, wander: 2.4 },
+        { id: "chickA", type: "chicken", label: "米粒", action: "摸摸", yaw: -24, baseYaw: -24, pitch: -24, angle: 17, state: "idle", color: "#fff6d7", pet: false, bob: 0, wander: 0, animState: "idle", animFrame: 0, animTimer: 0, dirFrame: 0 },
+        { id: "chickB", type: "chicken", label: "栗栗", action: "摸摸", yaw: 64, baseYaw: 64, pitch: -22, angle: 17, state: "idle", color: "#c98242", pet: false, bob: 1.7, wander: 1.2, animState: "idle", animFrame: 0, animTimer: 0, dirFrame: 0 },
+        { id: "chickC", type: "chicken", label: "小葵", action: "摸摸", yaw: -84, baseYaw: -84, pitch: -25, angle: 17, state: "idle", color: "#ffd85e", pet: false, bob: 3.1, wander: 2.4, animState: "idle", animFrame: 0, animTimer: 0, dirFrame: 0 },
         { id: "egg1", type: "egg", label: getEggQuality().label, action: "拾取", yaw: -42, pitch: -36, angle: 15, state: "onGround", quality: getEggQuality() },
         { id: "egg2", type: "egg", label: getEggQuality().label, action: "拾取", yaw: 88, pitch: -35, angle: 15, state: "onGround", quality: getEggQuality() }
       ];
@@ -252,10 +260,8 @@
 
     function startGame() {
       Audio.ensure();
-      calibrate();
       resetObjects();
       State.screen = "playing";
-      State.needsCalibration = State.sensorMode === "gyro";
       State.holding = null;
       State.hayLeft = Config.tasks.hay;
       State.feedPlaced = 0;
@@ -300,11 +306,11 @@
           State.sensorMode = "drag";
           State.desktopSim = true;
         }
-        startGame();
+        State.screen = "calibrate";
       } catch (_) {
         State.sensorMode = "drag";
         State.desktopSim = true;
-        startGame();
+        State.screen = "calibrate";
       }
     }
 
@@ -317,8 +323,6 @@
       State.targetLook.pitch = 0;
       State.look.yaw = 0;
       State.look.pitch = 0;
-      State.toast = "已重新居中";
-      State.toastTimer = 1.2;
     }
 
     function endGame(auto) {
@@ -328,7 +332,7 @@
       const perfect = completed >= 8;
       State.clearTime = Math.max(0, Math.round(Config.gameSeconds - State.timeLeft));
       State.resultGrade = getResultGrade(completed, State.timeLeft);
-      State.screen = "result";
+      State.screen = "nextday";
       State.save.days += 1;
       State.save.eggs += State.eggsCollected;
       if (perfect) {
@@ -395,20 +399,15 @@
       State.orientation.gamma = e.gamma || 0;
       State.orientation.has = true;
       if (State.sensorReady) State.sensorMode = "gyro";
-      if (State.needsCalibration && State.screen === "playing") {
-        State.calibration.alpha = State.orientation.alpha;
-        State.calibration.beta = State.orientation.beta;
-        State.needsCalibration = false;
-      }
     }
 
     function updateLook() {
       if (State.sensorMode === "gyro" && State.orientation.has && !State.desktopSim) {
         State.targetLook.yaw = normDeg(State.orientation.alpha - State.calibration.alpha + State.drag.yaw);
-        State.targetLook.pitch = clamp((State.orientation.beta - State.calibration.beta) * 0.7 + State.drag.pitch, -32, 32);
+        State.targetLook.pitch = clamp((State.orientation.beta - State.calibration.beta) * 0.7 + State.drag.pitch, -Config.pitchRange, Config.pitchRange);
       } else {
         State.targetLook.yaw = normDeg(State.drag.yaw);
-        State.targetLook.pitch = clamp(State.drag.pitch, -32, 32);
+        State.targetLook.pitch = clamp(State.drag.pitch, -Config.pitchRange, Config.pitchRange);
       }
       State.look.yaw = normDeg(State.look.yaw + normDeg(State.targetLook.yaw - State.look.yaw) * Config.yawSmoothing);
       State.look.pitch += (State.targetLook.pitch - State.look.pitch) * Config.pitchSmoothing;
@@ -455,12 +454,27 @@
       return null;
     }
 
-    function interact() {
+    function findObjectAtScreen(tx, ty) {
+      let best = null;
+      let bestDist = Infinity;
+      const tapRadius = 36;
+      for (const obj of State.objects) {
+        if ((obj.type === "egg" && obj.state === "collected") || (obj.type === "trough" && obj.state === "filled")) continue;
+        const p = project(obj);
+        if (!p) continue;
+        const dist = Math.hypot(p.x - tx, p.y - ty);
+        if (dist < tapRadius && dist < bestDist) {
+          best = obj;
+          bestDist = dist;
+        }
+      }
+      return best;
+    }
+
+    function interact(tx, ty) {
       if (State.screen !== "playing") return;
-      const obj = findHover();
+      const obj = findObjectAtScreen(tx, ty);
       if (!obj) {
-        State.toast = "再靠近一点点";
-        State.toastTimer = 0.8;
         Audio.beep("miss");
         return;
       }
@@ -477,7 +491,7 @@
         }
         State.save.hayStorage -= 1;
         State.holding = "hay";
-        addFloater("手持干草", Config.W - 82, Config.H - 92, "#ffe9a8");
+        addFloater("手持干草", tx, ty - 20, "#ffe9a8");
         Audio.beep("hay");
         vibrate(25);
       } else if (obj.type === "trough") {
@@ -497,8 +511,7 @@
         Audio.beep("place");
         vibrate(35);
         nudgeChickenToEat();
-        const p = project(obj) || { x: Config.W / 2, y: Config.H / 2 };
-        sparkle(p.x, p.y - 8);
+        sparkle(tx, ty - 8);
         checkMilestones();
       } else if (obj.type === "chicken") {
         if (!obj.pet) {
@@ -507,9 +520,8 @@
           obj.happyTimer = 4.5;
           State.petsDone += 1;
           checkMilestones();
-          const p = project(obj) || { x: Config.W / 2, y: Config.H / 2 };
-          burstHearts(p.x, p.y - 36, obj.color);
-          addFloater("+好感", p.x, p.y - 64, "#ff7aa8");
+          burstHearts(tx, ty - 36, obj.color);
+          addFloater("+好感", tx, ty - 64, "#ff7aa8");
           Audio.beep("pet");
           vibrate([20, 20, 30]);
         } else {
@@ -522,9 +534,8 @@
         State.eggsCollected += 1;
         State.collectedEggs.push(obj.quality);
         checkMilestones();
-        const p = project(obj) || { x: Config.W / 2, y: Config.H / 2 };
-        addFloater(`+1 ${obj.quality.label}`, p.x, p.y - 28, obj.quality.sparkle);
-        sparkle(p.x, p.y);
+        addFloater(`+1 ${obj.quality.label}`, tx, ty - 28, obj.quality.sparkle);
+        sparkle(tx, ty);
         Audio.beep("egg");
         vibrate(25);
       }
@@ -605,16 +616,36 @@
           if (o.type === "chicken") {
             o.bob += dt * 3;
             o.wander += dt;
+            const fpsMap = { idle: 1.5, happy: 8, peck: 10, dir: 4 };
+            const fps = fpsMap[o.animState] || 4;
+            o.animTimer += dt;
+            const interval = 1 / fps;
+            if (o.animTimer >= interval) {
+              o.animTimer -= interval;
+              const frames = Assets.frames[o.animState] || Assets.frames.idle;
+              o.animFrame = (o.animFrame + 1) % frames.length;
+            }
+            o.dirFrame = Math.floor((Math.sin(o.wander * 0.5) + 1) * 3) % 6;
             if (o.state === "eat") {
               o.eatTimer = Math.max(0, (o.eatTimer || 0) - dt);
-              o.yaw += Math.sin(performance.now() * 0.001 + o.bob) * dt * 4;
-              if (o.eatTimer <= 0) o.state = o.pet ? "happy" : "idle";
+              o.animState = "peck";
+              if (o.eatTimer <= 0) {
+                o.state = o.pet ? "happy" : "idle";
+                o.animState = o.state;
+                o.animFrame = 0;
+                o.animTimer = 0;
+              }
             } else if (o.state === "happy") {
               o.happyTimer = Math.max(0, (o.happyTimer || 0) - dt);
-              o.yaw = normDeg(o.baseYaw + Math.sin(o.wander * 1.8) * 2.5);
-              if (o.happyTimer <= 0) o.state = "idle";
-            } else {
-              o.yaw = normDeg(o.baseYaw + Math.sin(o.wander * 0.65) * 5);
+              o.animState = "happy";
+              if (o.happyTimer <= 0) {
+                o.state = "idle";
+                o.animState = "idle";
+                o.animFrame = 0;
+                o.animTimer = 0;
+              }
+            } else if (o.animState !== "peck") {
+              o.animState = "idle";
             }
             if (o.state === "happy" && Math.random() < dt * 0.55) {
               const p = project(o);
@@ -622,7 +653,6 @@
             }
           }
         }
-        findHover();
       }
       for (let i = State.particles.length - 1; i >= 0; i--) {
         const p = State.particles[i];
@@ -780,20 +810,23 @@
     function drawChicken(o) {
       const hop = Math.sin(o.bob) * (o.state === "happy" ? 4 : 1.5);
       ctx.translate(0, hop);
-      
+
       ctx.fillStyle = "rgba(55, 25, 15, .18)";
       ctx.beginPath();
       ctx.ellipse(0, 24, 28, 8, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      if (Assets.loaded) {
-        let imgName = "chicken_white";
-        if (o.id === "chickB") imgName = "chicken_brown";
-        if (o.id === "chickC") imgName = "chicken_yellow";
-        const img = Assets.imgs[imgName];
-        if (img) {
-          ctx.drawImage(img, -28, -48, 56, 56);
-        }
+      let frameKey;
+      if (o.animState === "idle") {
+        frameKey = Assets.frames.dir[o.dirFrame];
+      } else {
+        frameKey = Assets.frames[o.animState]?.[o.animFrame];
+      }
+      if (Assets.loaded && frameKey) {
+        const img = Assets.imgs[`小鸡状态图/${frameKey}`];
+        if (img) ctx.drawImage(img, -28, -48, 56, 56);
+      } else if (Assets.loaded && Assets.imgs.chicken_yellow) {
+        ctx.drawImage(Assets.imgs.chicken_yellow, -28, -48, 56, 56);
       } else {
         ctx.fillStyle = o.color;
         ctx.beginPath();
@@ -867,26 +900,6 @@
       }
       const mode = State.sensorMode === "gyro" ? "陀螺仪+拖动" : "拖动";
       safeText(State.desktopSim ? "电脑测试" : mode, 181, 29, 12, "#ffe6a8");
-
-      ctx.save();
-      ctx.translate(Config.W / 2, Config.H / 2);
-      ctx.strokeStyle = State.hoverId ? "#fff1a2" : "rgba(255,255,255,.72)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(0, 0, 9, 0, Math.PI * 2);
-      ctx.moveTo(-16, 0); ctx.lineTo(-7, 0);
-      ctx.moveTo(7, 0); ctx.lineTo(16, 0);
-      ctx.moveTo(0, -16); ctx.lineTo(0, -7);
-      ctx.moveTo(0, 7); ctx.lineTo(0, 16);
-      ctx.stroke();
-      ctx.restore();
-
-      const hover = State.objects.find(o => o.id === State.hoverId);
-      if (hover) {
-        ctx.fillStyle = "rgba(64, 39, 27, .72)";
-        roundRect(101, 352, 158, 34, 12, true);
-        safeText(`${hover.label} · ${hover.action}`, 180, 369, 14, "#fff5d2");
-      }
 
       drawObjectiveGuide();
 
@@ -998,15 +1011,73 @@
     function drawMenu() {
       ctx.fillStyle = "rgba(42, 28, 20, .96)";
       ctx.fillRect(0, 0, Config.W, Config.H);
-      safeText("晨光小鸡舍", Config.W / 2, 160, 32, "#fcd264");
-      safeText("TIDEGRAIN BAY", Config.W / 2, 196, 13, "#ae7b51");
-      safeText(`最高评分: ${State.save.bestClear ? "S" : "-"}  完美天数: ${State.save.perfectDays}`, Config.W / 2, 235, 12, "#705641");
-      safeText(`金币: ${State.save.coins}`, Config.W / 2, 255, 12, "#fcd264");
-      
-      drawButton(86, 282, 188, 48, "开始照料", true);
-      drawButton(86, 346, 188, 48, "进入商店", false);
-      drawButton(104, 410, 152, 40, "电脑测试", false);
-      
+      safeText("晨光小鸡舍", Config.W / 2, 110, 32, "#fcd264");
+      safeText("TIDEGRAIN BAY", Config.W / 2, 145, 13, "#ae7b51");
+      safeText(`最高评分: ${State.save.bestClear ? "S" : "-"}  完美天数: ${State.save.perfectDays}`, Config.W / 2, 180, 12, "#705641");
+      safeText(`金币: ${State.save.coins}`, Config.W / 2, 200, 12, "#fcd264");
+
+      ctx.fillStyle = "rgba(255, 235, 190, .1)";
+      roundRect(50, 220, 260, 70, 12, true);
+      safeText("如何获得更好鸡蛋？", Config.W / 2, 242, 13, "#fcd264");
+      safeText("喂食 · 抚摸 · 购买保温灯", Config.W / 2, 264, 11, "#c4a67a");
+      safeText("好感度越高鸡蛋品质越好", Config.W / 2, 282, 11, "#ae7b51");
+
+      drawButton(86, 315, 188, 48, "开始照料", true);
+      drawButton(86, 378, 188, 48, "进入商店", false);
+      drawButton(86, 441, 188, 40, "重新开始", false);
+      drawButton(104, 498, 152, 40, "电脑测试", false);
+    }
+
+    function drawShop() {
+      ctx.fillStyle = "rgba(42, 28, 20, .96)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      safeText("小鸡商店", Config.W / 2, 80, 28, "#fcd264");
+      safeText(`当前金币: ${State.save.coins}`, Config.W / 2, 115, 14, "#ffe4a7");
+
+      ctx.fillStyle = "rgba(255, 235, 190, .1)";
+      roundRect(30, 135, 300, 100, 12, true);
+      safeText("鸡蛋商店", Config.W / 2, 158, 14, "#fcd264");
+      const priceNormal = 10, priceSilver = 20, priceGold = 50, priceRare = 100;
+      safeText(`普通蛋:${priceNormal} · 银蛋:${priceSilver} · 金蛋:${priceGold} · 稀有蛋:${priceRare}`, Config.W / 2, 182, 11, "#c4a67a");
+      safeText("鸡蛋可兑换金币，金币可购买干草和保温灯", Config.W / 2, 205, 11, "#ae7b51");
+
+      drawButton(50, 250, 260, 55, `买干草 (+10) - 50金币`, false);
+      safeText(`当前库存: ${State.save.hayStorage}`, Config.W / 2, 318, 12, "#ae7b51");
+
+      drawButton(50, 365, 260, 55, State.save.heatLamp ? "已购买保温灯" : "买保温灯 - 500金币", false);
+      safeText(State.save.heatLamp ? "小鸡们现在很暖和" : "保温灯 +300 好感度加成", Config.W / 2, 435, 12, "#ae7b51");
+
+      drawButton(104, 490, 152, 40, "返回", false);
+    }
+
+    function drawBoot() {
+      ctx.fillStyle = "#2e241d";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      const pulse = 0.92 + Math.sin(performance.now() * 0.003) * 0.08;
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      safeText("晨光小鸡舍", Config.W / 2, 260, 32, "#fcd264");
+      ctx.restore();
+      safeText("TIDEGRAIN BAY", Config.W / 2, 300, 13, "#ae7b51");
+      const dots = ".".repeat(Math.floor(performance.now() / 500) % 4);
+      safeText(`加载中${dots}`, Config.W / 2, 380, 14, "#8a6042");
+      if (Assets.loaded && State.screen === "boot") {
+        setTimeout(() => { State.screen = "permission"; }, 400);
+      }
+    }
+
+    function drawPermission() {
+      ctx.fillStyle = "rgba(42, 28, 20, .97)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      safeText("开启陀螺仪体验", Config.W / 2, 160, 28, "#fcd264");
+      safeText("倾斜手机 360° 环顾鸡舍", Config.W / 2, 220, 15, "#fff5d2");
+      ctx.fillStyle = "rgba(255, 235, 190, .12)";
+      roundRect(40, 250, 280, 140, 14, true);
+      safeText("将手机平放或手持舒适", Config.W / 2, 290, 13, "#c4a67a");
+      safeText("倾斜手机查看四周", Config.W / 2, 320, 13, "#c4a67a");
+      safeText("点击屏幕中央交互", Config.W / 2, 350, 13, "#c4a67a");
+      safeText("也可以直接拖动屏幕", Config.W / 2, 380, 13, "#c4a67a");
+      drawButton(86, 430, 188, 52, "开启游戏", true);
       const px = Config.W / 2 - 28, py = Config.H - 120;
       ctx.fillStyle = "#fff6d7";
       ctx.beginPath();
@@ -1027,24 +1098,79 @@
       ctx.beginPath();
       ctx.arc(px + 13, py - 25, 2.5, 0, Math.PI * 2);
       ctx.fill();
-      safeText(`第 ${State.save.days + 1} 天`, px + 28, py + 56, 14, "#8a6042");
-    }
-    
-    function drawShop() {
-      ctx.fillStyle = "rgba(42, 28, 20, .96)";
-      ctx.fillRect(0, 0, Config.W, Config.H);
-      safeText("小鸡商店", Config.W / 2, 100, 28, "#fcd264");
-      safeText(`当前金币: ${State.save.coins}`, Config.W / 2, 140, 16, "#ffe4a7");
-      
-      drawButton(50, 200, 260, 60, `买干草 (+10) - 50金币`, false);
-      safeText(`当前库存: ${State.save.hayStorage}`, Config.W / 2, 275, 12, "#ae7b51");
-      
-      drawButton(50, 320, 260, 60, State.save.heatLamp ? "已购买保温灯" : "买保温灯 - 500金币", false);
-      safeText(State.save.heatLamp ? "小鸡们现在很暖和" : "提高出现高品质鸡蛋的概率", Config.W / 2, 395, 12, "#ae7b51");
-      
-      drawButton(104, 480, 152, 40, "返回", false);
+      safeText("第 1 天", px + 28, py + 56, 14, "#8a6042");
     }
 
+    function drawCalibrate() {
+      ctx.fillStyle = "rgba(42, 28, 20, .97)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      safeText("校准视角", Config.W / 2, 150, 28, "#fcd264");
+      safeText("将手机朝向平时玩游戏的姿势", Config.W / 2, 210, 14, "#fff5d2");
+      safeText("然后点击「居中」锁定正前方", Config.W / 2, 240, 14, "#fff5d2");
+      const cx = Config.W / 2, cy = 350;
+      ctx.save();
+      ctx.translate(cx, cy);
+      const tilt = Math.sin(performance.now() * 0.002) * 8;
+      ctx.rotate(tilt * Math.PI / 180);
+      ctx.fillStyle = "#5c3a21";
+      roundRect(-40, -60, 80, 120, 12, true);
+      ctx.fillStyle = "#3b2c23";
+      roundRect(-32, -48, 64, 90, 8, true);
+      ctx.fillStyle = "#f5d08f";
+      ctx.fillRect(-26, -42, 52, 74);
+      ctx.fillStyle = "#7b4a2b";
+      ctx.strokeStyle = "#9b6337";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, -42); ctx.lineTo(0, 32);
+      ctx.moveTo(-26, 0); ctx.lineTo(26, 0);
+      ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = "#fff1a2";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cx - 16, cy - 20); ctx.lineTo(cx - 6, cy - 20);
+      ctx.moveTo(cx + 6, cy - 20); ctx.lineTo(cx + 16, cy - 20);
+      ctx.moveTo(cx, cy - 26); ctx.lineTo(cx, cy - 16);
+      ctx.moveTo(cx, cy + 16); ctx.lineTo(cx, cy + 26);
+      ctx.stroke();
+      drawButton(86, 480, 188, 52, "居中并开始", true);
+    }
+
+    function drawNextDay() {
+      drawBackground();
+      ctx.fillStyle = "rgba(47, 31, 23, .65)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      ctx.fillStyle = "rgba(255, 239, 197, .96)";
+      roundRect(32, 88, 296, 380, 18, true);
+      const dayNum = State.save.days;
+      safeText(`第 ${dayNum} 天完成`, 180, 140, 26, "#604026");
+      safeText(State.resultTitle || "今日照料完成", 180, 178, 18, "#765238");
+      safeText(State.resultBody || "", 180, 212, 13, "#9a6a3c");
+      ctx.fillStyle = "rgba(180, 140, 90, .25)";
+      roundRect(50, 230, 260, 110, 12, true);
+      safeText(`本局好感`, 180, 252, 12, "#9a6a3c");
+      safeText(`米粒 +${State.sessionFriendshipGain.chickA || 0} · 栗栗 +${State.sessionFriendshipGain.chickB || 0} · 小葵 +${State.sessionFriendshipGain.chickC || 0}`, 180, 275, 12, "#765238");
+      safeText(`累计鸡蛋`, 180, 300, 12, "#9a6a3c");
+      safeText(`普通 ${State.save.eggQuality.normal || 0} · 银 ${State.save.eggQuality.silver || 0} · 金 ${State.save.eggQuality.gold || 0} · 稀有 ${State.save.eggQuality.rare || 0}`, 180, 323, 12, "#765238");
+      safeText(`已照料天数：${State.save.days} · 累计鸡蛋：${State.save.eggs}`, 180, 358, 12, "#9a6a3c");
+      safeText("明天也来看看它们吧", 180, 400, 14, "#9a6a3c");
+      drawButton(86, 440, 188, 48, "开始新的一天", true);
+      drawButton(104, 506, 152, 40, "返回菜单");
+    }
+
+    function newGame() {
+      State.save.days = 0;
+      State.save.eggs = 0;
+      State.save.bestClear = 0;
+      State.save.perfectDays = 0;
+      State.save.friendship = {};
+      State.save.eggQuality = { normal: 0, silver: 0, gold: 0, rare: 0 };
+      State.save.coins = 0;
+      State.save.hayStorage = 10;
+      State.save.heatLamp = false;
+      saveGame();
+    }
 
     function drawResult() {
       drawBackground();
@@ -1098,7 +1224,10 @@
 
     function render() {
       ctx.clearRect(0, 0, Config.W, Config.H);
-      if (State.screen === "menu") drawMenu();
+      if (State.screen === "boot") drawBoot();
+      else if (State.screen === "permission") drawPermission();
+      else if (State.screen === "calibrate") drawCalibrate();
+      else if (State.screen === "menu") drawMenu();
       else if (State.screen === "shop") drawShop();
       else if (State.screen === "playing") {
         drawBackground();
@@ -1106,7 +1235,8 @@
         drawParticles();
         drawHud();
         drawToast();
-      } else if (State.screen === "result") drawResult();
+      } else if (State.screen === "nextday") drawNextDay();
+      else if (State.screen === "result") drawResult();
       else drawError();
     }
 
@@ -1145,7 +1275,7 @@
       State.drag.y = p.y;
       if (State.drag.canPan) {
         State.drag.yaw = normDeg(State.drag.yaw - dx * 0.32);
-        State.drag.pitch = clamp(State.drag.pitch + dy * 0.11, -32, 32);
+        State.drag.pitch = clamp(State.drag.pitch + dy * 0.11, -Config.pitchRange, Config.pitchRange);
       }
     }
 
@@ -1166,14 +1296,32 @@
     }
 
     function handleTap(x, y) {
-      if (State.screen === "menu") {
-        if (hit(x, y, 86, 282, 188, 48)) requestMotionAndStart();
+      if (State.screen === "permission") {
+        requestMotionAndStart();
+      } else if (State.screen === "calibrate") {
+        calibrate();
+        startGame();
+      } else if (State.screen === "menu") {
+        if (hit(x, y, 86, 282, 188, 48)) {
+          if (State.permissionAsked) {
+            State.screen = "calibrate";
+          } else {
+            requestMotionAndStart();
+          }
+        }
         else if (hit(x, y, 86, 346, 188, 48)) State.screen = "shop";
-        else if (hit(x, y, 104, 410, 152, 40)) {
+        else if (hit(x, y, 86, 410, 188, 40)) {
+          newGame();
+          State.permissionAsked = false;
+          State.sensorMode = "drag";
+          State.sensorReady = false;
+          State.desktopSim = false;
+          State.screen = "permission";
+        } else if (hit(x, y, 104, 468, 152, 40)) {
           State.sensorMode = "drag";
           State.sensorReady = false;
           State.desktopSim = true;
-          startGame();
+          State.screen = "calibrate";
         }
       } else if (State.screen === "shop") {
         if (hit(x, y, 50, 200, 260, 60)) {
@@ -1196,7 +1344,13 @@
       } else if (State.screen === "playing") {
         if (hit(x, y, 16, 584, 64, 34)) calibrate();
         else if (hit(x, y, 90, 584, 64, 34)) endGame(false);
-        else interact();
+        else interact(x, y);
+      } else if (State.screen === "nextday") {
+        if (hit(x, y, 86, 440, 188, 48)) {
+          State.screen = "calibrate";
+        } else if (hit(x, y, 104, 506, 152, 40)) {
+          State.screen = "menu";
+        }
       } else if (State.screen === "result") {
         if (hit(x, y, 86, 482, 188, 48)) startGame();
         else if (hit(x, y, 104, 548, 152, 40)) State.screen = "menu";
