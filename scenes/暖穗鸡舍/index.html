@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <title>晨光小鸡舍</title>
+  <title>穗潮湾场景原型集</title>
   <style>
     * { box-sizing: border-box; }
     html, body {
@@ -11,8 +11,8 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #2e241d;
-      color: #fff7df;
+      background: #211a16;
+      color: #fff6de;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       touch-action: none;
       user-select: none;
@@ -23,8 +23,8 @@
       display: grid;
       place-items: center;
       background:
-        radial-gradient(circle at 50% 15%, rgba(255, 230, 162, .2), transparent 35%),
-        linear-gradient(180deg, #3b2c23, #1d1715);
+        radial-gradient(circle at 50% 15%, rgba(255, 223, 165, 0.18), transparent 36%),
+        linear-gradient(180deg, #35281f, #15110f);
     }
     canvas {
       display: block;
@@ -32,9 +32,9 @@
       height: min(100vh, calc(100vw * 16 / 9));
       max-width: 100vw;
       max-height: 100vh;
-      background: #f5d08f;
+      background: #142027;
       border-radius: 14px;
-      box-shadow: 0 22px 70px rgba(0, 0, 0, .45);
+      box-shadow: 0 22px 70px rgba(0, 0, 0, 0.42);
       touch-action: none;
     }
     @media (max-width: 520px) {
@@ -44,7 +44,7 @@
 </head>
 <body>
   <div id="wrap">
-    <canvas id="gameCanvas" width="360" height="640" aria-label="晨光小鸡舍游戏画面"></canvas>
+    <canvas id="gameCanvas" width="360" height="640" aria-label="穗潮湾场景原型集"></canvas>
   </div>
 
   <script>
@@ -52,57 +52,93 @@
     "use strict";
 
     const Config = {
-      version: "v1.0",
+      version: "v1.7",
       W: 360,
       H: 640,
-      fov: 96,
-      pitchScale: 5.2,
+      fov: 98,
+      pitchScale: 5.3,
       yawSmoothing: 0.18,
       pitchSmoothing: 0.18,
-      gameSeconds: 90,
+      staminaMax: 100,
       errorText: "哎呀，出错了，请重启试试吧~",
-      tasks: { hay: 3, pets: 3, eggs: 2 },
-      storageKey: "morning-coop-save-v1"
+      storageKey: "tidegrain-bay-multi-scene-v1"
     };
+
+    const SceneOrder = ["coop", "dock", "orchard", "market"];
+    const SceneMeta = {
+      coop: { name: "暖穗鸡舍", en: "WarmSheaf Coop", core: "投喂、抚摸、拾蛋", color: "#efbd70", duration: 80 },
+      dock: { name: "听潮码头", en: "Tidewharf Dock", core: "听音、抛竿、拉扯", color: "#6dc5dd", duration: 82 },
+      orchard: { name: "风磨果园", en: "Windmill Orchard", core: "摇树、分拣、压榨", color: "#f29d63", duration: 80 },
+      market: { name: "暮灯集市", en: "Dusklantern Market", core: "浏览、交付、变现", color: "#c18dff", duration: 80 }
+    };
+
+    const InventoryLabels = {
+      egg: "鸡蛋",
+      silverEgg: "银星蛋",
+      fish: "鲜鱼",
+      shell: "贝壳",
+      berry: "鲜果",
+      jam: "果酱",
+      honey: "蜂蜜"
+    };
+
+    const OrderDefs = [
+      { id: "egg_pair", title: "早餐篮", needs: { egg: 2 }, gold: 90, rep: 1 },
+      { id: "silver_show", title: "银星展示", needs: { silverEgg: 1 }, gold: 120, rep: 1 },
+      { id: "dock_pair", title: "海风拼盘", needs: { fish: 1, shell: 1 }, gold: 125, rep: 1 },
+      { id: "sweet_jar", title: "甜味订单", needs: { jam: 1 }, gold: 150, rep: 2 },
+      { id: "orchard_box", title: "果篮补货", needs: { berry: 2 }, gold: 96, rep: 1 },
+      { id: "honey_gift", title: "蜂蜜伴手礼", needs: { honey: 1 }, gold: 138, rep: 2 }
+    ];
 
     const canvas = document.getElementById("gameCanvas");
     const ctx = canvas.getContext("2d");
+
+    function defaultSave() {
+      return {
+        day: 1,
+        gold: 120,
+        stamina: Config.staminaMax,
+        rep: 0,
+        weather: "晴",
+        friendship: { chickA: 0, chickB: 0, chickC: 0 },
+        inventory: {
+          egg: 0,
+          silverEgg: 0,
+          fish: 0,
+          shell: 0,
+          berry: 0,
+          jam: 0,
+          honey: 0
+        },
+        marketOrders: [],
+        sceneBest: {},
+        sceneClears: {}
+      };
+    }
 
     const State = {
       screen: "menu",
       sensorMode: "drag",
       desktopSim: false,
       sensorReady: false,
-      permissionAsked: false,
       needsCalibration: false,
-      holding: null,
-      hayLeft: 3,
-      feedPlaced: 0,
-      eggsCollected: 0,
-      petsDone: 0,
-      timeLeft: Config.gameSeconds,
+      permissionAsked: false,
       lastTime: 0,
       hoverId: null,
-      lastFedId: null,
       toast: "",
       toastTimer: 0,
-      resultTitle: "",
-      resultBody: "",
-      resultGrade: "",
-      clearTime: 0,
-      collectedEggs: [],
-      sessionFriendshipGain: {},
-      milestones: {},
-      ended: false,
+      result: null,
+      currentScene: null,
       drag: { active: false, moved: false, canPan: false, x: 0, y: 0, yaw: 0, pitch: 0 },
+      press: { down: false },
       orientation: { alpha: 0, beta: 0, gamma: 0, has: false },
       calibration: { alpha: 0, beta: 70 },
       targetLook: { yaw: 0, pitch: 0 },
       look: { yaw: 0, pitch: 0 },
       particles: [],
       floaters: [],
-      save: { days: 0, eggs: 0, bestClear: 0, perfectDays: 0, friendship: {}, eggQuality: { normal: 0, silver: 0, gold: 0, rare: 0 } },
-      objects: []
+      save: defaultSave()
     };
 
     const Audio = {
@@ -122,29 +158,32 @@
           const osc = this.ctx.createOscillator();
           const gain = this.ctx.createGain();
           const map = {
-            hay: [360, 0.07, "triangle"],
-            place: [260, 0.09, "sine"],
-            pet: [620, 0.12, "sine"],
-            egg: [780, 0.08, "triangle"],
-            miss: [150, 0.04, "sawtooth"],
-            win: [520, 0.22, "sine"]
+            pickup: [340, 0.08, "triangle"],
+            place: [250, 0.1, "sine"],
+            good: [620, 0.12, "sine"],
+            harvest: [780, 0.09, "triangle"],
+            coin: [560, 0.14, "square"],
+            miss: [150, 0.05, "sawtooth"],
+            bite: [920, 0.08, "triangle"],
+            win: [460, 0.24, "sine"]
           };
-          const [freq, dur, wave] = map[type] || map.miss;
-          osc.type = wave;
-          osc.frequency.setValueAtTime(freq, now);
-          if (type === "win") osc.frequency.exponentialRampToValueAtTime(880, now + dur);
+          const entry = map[type] || map.miss;
+          osc.type = entry[2];
+          osc.frequency.setValueAtTime(entry[0], now);
+          if (type === "win" || type === "coin") osc.frequency.exponentialRampToValueAtTime(entry[0] * 1.5, now + entry[1]);
           gain.gain.setValueAtTime(0.0001, now);
           gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + entry[1]);
           osc.connect(gain);
           gain.connect(this.ctx.destination);
           osc.start(now);
-          osc.stop(now + dur + 0.02);
+          osc.stop(now + entry[1] + 0.02);
         } catch (_) {}
       }
     };
 
     function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function lerp(a, b, t) { return a + (b - a) * t; }
     function normDeg(v) {
       let n = ((v + 180) % 360 + 360) % 360 - 180;
       return n === -180 ? 180 : n;
@@ -162,110 +201,156 @@
       ctx.fillText(text, x, y);
       ctx.restore();
     }
+    function roundRect(x, y, w, h, r, fill, stroke) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+    }
+    function setToast(text, time = 1.2) {
+      State.toast = text;
+      State.toastTimer = time;
+    }
+
+    function normalizeSave(parsed) {
+      const base = defaultSave();
+      const save = Object.assign(base, parsed || {});
+      save.friendship = Object.assign(base.friendship, parsed && parsed.friendship ? parsed.friendship : {});
+      save.inventory = Object.assign(base.inventory, parsed && parsed.inventory ? parsed.inventory : {});
+      save.sceneBest = filterSceneStats(parsed && parsed.sceneBest);
+      save.sceneClears = filterSceneStats(parsed && parsed.sceneClears);
+      save.marketOrders = normalizeOrders(parsed && parsed.marketOrders);
+      return save;
+    }
 
     function loadSave() {
       try {
         const raw = localStorage.getItem(Config.storageKey);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          State.save = Object.assign(State.save, parsed);
-          State.save.bestClear = parsed.bestClear || 0;
-          State.save.perfectDays = parsed.perfectDays || 0;
-          State.save.friendship = Object.assign({}, State.save.friendship || {}, parsed.friendship || {});
-          State.save.eggQuality = Object.assign({ normal: 0, silver: 0, gold: 0, rare: 0 }, parsed.eggQuality || {});
-        }
-      } catch (_) {}
+        State.save = raw ? normalizeSave(JSON.parse(raw)) : normalizeSave(null);
+      } catch (_) {
+        State.save = normalizeSave(null);
+      }
     }
     function saveGame() {
       try { localStorage.setItem(Config.storageKey, JSON.stringify(State.save)); } catch (_) {}
     }
 
+    function randomChoice(list) {
+      return list[Math.floor(Math.random() * list.length)];
+    }
+    function rollWeather() {
+      const pool = ["晴", "晴", "多云", "海风", "小雨"];
+      return randomChoice(pool);
+    }
+    function generateOrders() {
+      const available = OrderDefs.slice();
+      const result = [];
+      while (result.length < 3 && available.length) {
+        const idx = Math.floor(Math.random() * available.length);
+        result.push(Object.assign({ done: false }, available.splice(idx, 1)[0]));
+      }
+      return result;
+    }
+    function filterSceneStats(map) {
+      const result = {};
+      for (const id of SceneOrder) {
+        if (map && map[id] != null) result[id] = map[id];
+      }
+      return result;
+    }
+    function isSupportedOrder(order) {
+      if (!order || typeof order !== "object" || !order.needs) return false;
+      return Object.keys(order.needs).every((key) => Object.prototype.hasOwnProperty.call(InventoryLabels, key));
+    }
+    function normalizeOrders(orders) {
+      if (!Array.isArray(orders)) return generateOrders();
+      const cleaned = orders.filter(isSupportedOrder).map((order) => Object.assign({ done: false }, order));
+      return cleaned.length >= 3 ? cleaned.slice(0, 3) : generateOrders();
+    }
+    function advanceDay() {
+      State.save.day += 1;
+      State.save.stamina = Config.staminaMax;
+      State.save.weather = rollWeather();
+      State.save.marketOrders = generateOrders();
+      saveGame();
+      setToast(`第 ${State.save.day} 天开始了 · ${State.save.weather}`, 1.8);
+    }
+
+    function addInventory(key, amount) {
+      State.save.inventory[key] = (State.save.inventory[key] || 0) + amount;
+    }
+    function hasInventory(need) {
+      for (const [key, amount] of Object.entries(need)) {
+        if ((State.save.inventory[key] || 0) < amount) return false;
+      }
+      return true;
+    }
+    function removeInventory(need) {
+      if (!hasInventory(need)) return false;
+      for (const [key, amount] of Object.entries(need)) {
+        State.save.inventory[key] = Math.max(0, (State.save.inventory[key] || 0) - amount);
+      }
+      return true;
+    }
+    function useStamina(amount) {
+      if (State.save.stamina < amount) {
+        setToast("体力不够啦，先睡一觉吧", 1.4);
+        Audio.beep("miss");
+        return false;
+      }
+      State.save.stamina = Math.max(0, State.save.stamina - amount);
+      return true;
+    }
     function getFriendship(id) {
       return clamp(State.save.friendship[id] || 0, 0, 1000);
     }
-
     function heartsFromFriendship(value) {
       return clamp(Math.floor(value / 200), 0, 5);
     }
-
     function getEggQuality() {
-      const ids = ["chickA", "chickB", "chickC"];
-      const avg = ids.reduce((sum, id) => sum + getFriendship(id), 0) / ids.length;
-      if (avg >= 900) return { key: "rare", label: "稀有蛋", color: "#d8b4ff", sparkle: "#f3ddff" };
-      if (avg >= 600) return { key: "gold", label: "金星蛋", color: "#ffe07a", sparkle: "#fff3a8" };
-      if (avg >= 200) return { key: "silver", label: "银星蛋", color: "#e7edf4", sparkle: "#ffffff" };
-      return { key: "normal", label: "普通蛋", color: "#fff4d2", sparkle: "#ffffff" };
+      const avg = (getFriendship("chickA") + getFriendship("chickB") + getFriendship("chickC")) / 3;
+      return avg >= 300 ? "silverEgg" : "egg";
+    }
+    function formatNeed(need) {
+      return Object.entries(need).map(([key, amount]) => `${InventoryLabels[key]}x${amount}`).join(" + ");
     }
 
-    function resetObjects() {
-      State.objects = [
-        { id: "hopper", type: "hopper", label: "干草料斗", action: "拿干草", yaw: -58, pitch: -4, angle: 13, state: "ready" },
-        { id: "trough1", type: "trough", label: "食槽 1", action: "放干草", yaw: 4, pitch: -18, angle: 13, state: "empty" },
-        { id: "trough2", type: "trough", label: "食槽 2", action: "放干草", yaw: 24, pitch: -18, angle: 13, state: "empty" },
-        { id: "trough3", type: "trough", label: "食槽 3", action: "放干草", yaw: 44, pitch: -18, angle: 13, state: "empty" },
-        { id: "chickA", type: "chicken", label: "米粒", action: "摸摸", yaw: -24, baseYaw: -24, pitch: -24, angle: 17, state: "idle", color: "#fff6d7", pet: false, bob: 0, wander: 0 },
-        { id: "chickB", type: "chicken", label: "栗栗", action: "摸摸", yaw: 64, baseYaw: 64, pitch: -22, angle: 17, state: "idle", color: "#c98242", pet: false, bob: 1.7, wander: 1.2 },
-        { id: "chickC", type: "chicken", label: "小葵", action: "摸摸", yaw: -84, baseYaw: -84, pitch: -25, angle: 17, state: "idle", color: "#ffd85e", pet: false, bob: 3.1, wander: 2.4 },
-        { id: "egg1", type: "egg", label: getEggQuality().label, action: "拾取", yaw: -42, pitch: -36, angle: 15, state: "onGround", quality: getEggQuality() },
-        { id: "egg2", type: "egg", label: getEggQuality().label, action: "拾取", yaw: 88, pitch: -35, angle: 15, state: "onGround", quality: getEggQuality() }
-      ];
+    function project(obj) {
+      const dx = normDeg(obj.yaw - State.look.yaw);
+      if (Math.abs(dx) > Config.fov / 2 + 22) return null;
+      const x = Config.W / 2 + (dx / (Config.fov / 2)) * (Config.W / 2);
+      const y = 330 - (obj.pitch - State.look.pitch) * Config.pitchScale;
+      const scale = clamp(1 - Math.abs(dx) / 132, 0.52, 1.16);
+      return { x, y, scale, dx };
     }
 
-    function startGame() {
-      Audio.ensure();
-      calibrate();
-      resetObjects();
-      State.screen = "playing";
-      State.needsCalibration = State.sensorMode === "gyro";
-      State.holding = null;
-      State.hayLeft = Config.tasks.hay;
-      State.feedPlaced = 0;
-      State.lastFedId = null;
-      State.eggsCollected = 0;
-      State.petsDone = 0;
-      State.timeLeft = Config.gameSeconds;
-      State.resultTitle = "";
-      State.resultBody = "";
-      State.resultGrade = "";
-      State.clearTime = 0;
-      State.collectedEggs = [];
-      State.sessionFriendshipGain = {};
-      State.milestones = {};
-      State.ended = false;
-      State.toast = "转动手机，也可按住画面拖动视角";
-      State.toastTimer = 2.2;
-      State.particles.length = 0;
-      State.floaters.length = 0;
+    function getSceneObjects() {
+      return State.currentScene ? State.currentScene.objects.filter(o => !o.hidden) : [];
     }
 
-    async function requestMotionAndStart() {
-      try {
-        Audio.ensure();
-        State.permissionAsked = true;
-        const DOE = window.DeviceOrientationEvent;
-        if (DOE && typeof DOE.requestPermission === "function") {
-          const res = await DOE.requestPermission();
-          if (res === "granted") {
-            State.sensorMode = "gyro";
-            State.sensorReady = true;
-          } else {
-            State.sensorMode = "drag";
-            State.toast = "已切换为拖动视角";
-            State.toastTimer = 2;
-          }
-        } else if (DOE) {
-          State.sensorMode = "gyro";
-          State.sensorReady = true;
-        } else {
-          State.sensorMode = "drag";
-          State.desktopSim = true;
+    function findHover() {
+      if (!State.currentScene) return null;
+      let best = null;
+      let bestScore = Infinity;
+      for (const obj of getSceneObjects()) {
+        if (obj.disabled) continue;
+        const dy = Math.abs(obj.pitch - State.look.pitch);
+        const dist = Math.hypot(angleDistance(obj.yaw, State.look.yaw), dy * 1.35);
+        if (dist < (obj.angle || 15) && dist < bestScore) {
+          best = obj;
+          bestScore = dist;
         }
-        startGame();
-      } catch (_) {
-        State.sensorMode = "drag";
-        State.desktopSim = true;
-        startGame();
       }
+      State.hoverId = best ? best.id : null;
+      return best;
     }
 
     function calibrate() {
@@ -277,70 +362,7 @@
       State.targetLook.pitch = 0;
       State.look.yaw = 0;
       State.look.pitch = 0;
-      State.toast = "已重新居中";
-      State.toastTimer = 1.2;
-    }
-
-    function endGame(auto) {
-      if (State.ended) return;
-      State.ended = true;
-      const completed = State.feedPlaced + State.petsDone + State.eggsCollected;
-      const perfect = completed >= 8;
-      State.clearTime = Math.max(0, Math.round(Config.gameSeconds - State.timeLeft));
-      State.resultGrade = getResultGrade(completed, State.timeLeft);
-      State.screen = "result";
-      State.save.days += 1;
-      State.save.eggs += State.eggsCollected;
-      if (perfect) {
-        State.save.perfectDays = (State.save.perfectDays || 0) + 1;
-        if (!State.save.bestClear || State.clearTime < State.save.bestClear) State.save.bestClear = State.clearTime;
-      }
-      for (const egg of State.collectedEggs) {
-        State.save.eggQuality[egg.key] = (State.save.eggQuality[egg.key] || 0) + 1;
-      }
-      for (const o of State.objects) {
-        let gain = 0;
-        if (o.type === "chicken" && o.pet) {
-          gain += 15;
-        }
-        if (o.type === "chicken" && State.feedPlaced >= Config.tasks.hay) {
-          gain += 8;
-        }
-        if (o.type === "chicken" && completed >= 8) {
-          gain += 5;
-        }
-        if (o.type === "chicken" && gain > 0) {
-          State.save.friendship[o.id] = clamp((State.save.friendship[o.id] || 0) + gain, 0, 1000);
-          State.sessionFriendshipGain[o.id] = gain;
-        }
-      }
-      saveGame();
-      if (perfect) {
-        State.resultTitle = "今天的小鸡都吃饱啦";
-        State.resultBody = `评分 ${State.resultGrade} · 用时 ${State.clearTime}s · 鸡蛋 ${formatEggSummary()}`;
-        Audio.beep("win");
-      } else if (auto) {
-        State.resultTitle = "还有小鸡在等你";
-        State.resultBody = `评分 ${State.resultGrade} · 完成度 ${completed}/8 · 鸡蛋 ${formatEggSummary()}`;
-      } else {
-        State.resultTitle = "今日照料暂停";
-        State.resultBody = `评分 ${State.resultGrade} · 完成度 ${completed}/8 · 鸡蛋 ${formatEggSummary()}`;
-      }
-    }
-
-    function getResultGrade(completed, timeLeft) {
-      if (completed >= 8 && timeLeft >= 35) return "S";
-      if (completed >= 8) return "A";
-      if (completed >= 6) return "B";
-      if (completed >= 3) return "C";
-      return "D";
-    }
-
-    function formatEggSummary() {
-      if (!State.collectedEggs.length) return "0/2";
-      const counts = {};
-      for (const egg of State.collectedEggs) counts[egg.label] = (counts[egg.label] || 0) + 1;
-      return Object.entries(counts).map(([label, count]) => `${label}x${count}`).join("、");
+      setToast("已重新居中", 1);
     }
 
     function onOrientation(e) {
@@ -359,7 +381,7 @@
     function updateLook() {
       if (State.sensorMode === "gyro" && State.orientation.has && !State.desktopSim) {
         State.targetLook.yaw = normDeg(State.orientation.alpha - State.calibration.alpha + State.drag.yaw);
-        State.targetLook.pitch = clamp((State.orientation.beta - State.calibration.beta) * 0.7 + State.drag.pitch, -32, 32);
+        State.targetLook.pitch = clamp((State.orientation.beta - State.calibration.beta) * 0.72 + State.drag.pitch, -32, 32);
       } else {
         State.targetLook.yaw = normDeg(State.drag.yaw);
         State.targetLook.pitch = clamp(State.drag.pitch, -32, 32);
@@ -368,153 +390,510 @@
       State.look.pitch += (State.targetLook.pitch - State.look.pitch) * Config.pitchSmoothing;
     }
 
-    function project(obj) {
-      const dx = normDeg(obj.yaw - State.look.yaw);
-      if (Math.abs(dx) > Config.fov / 2 + 20) return null;
-      const x = Config.W / 2 + (dx / (Config.fov / 2)) * (Config.W / 2);
-      const y = 330 - (obj.pitch - State.look.pitch) * Config.pitchScale;
-      const scale = clamp(1 - Math.abs(dx) / 130, 0.55, 1.15);
-      return { x, y, scale, dx };
+    async function requestMotionAndOpenHub() {
+      try {
+        Audio.ensure();
+        State.permissionAsked = true;
+        const DOE = window.DeviceOrientationEvent;
+        if (DOE && typeof DOE.requestPermission === "function") {
+          const res = await DOE.requestPermission();
+          if (res === "granted") {
+            State.sensorMode = "gyro";
+            State.sensorReady = true;
+          } else {
+            State.sensorMode = "drag";
+            State.desktopSim = false;
+            setToast("已切换为拖动视角", 1.6);
+          }
+        } else if (DOE) {
+          State.sensorMode = "gyro";
+          State.sensorReady = true;
+        } else {
+          State.sensorMode = "drag";
+          State.desktopSim = true;
+        }
+      } catch (_) {
+        State.sensorMode = "drag";
+        State.desktopSim = true;
+      }
+      State.screen = "hub";
     }
 
-    function findHover() {
-      let best = null;
-      let bestScore = Infinity;
-      for (const obj of State.objects) {
-        if ((obj.type === "egg" && obj.state === "collected") || (obj.type === "trough" && obj.state === "filled")) continue;
-        const dy = Math.abs(obj.pitch - State.look.pitch);
-        const dist = Math.hypot(angleDistance(obj.yaw, State.look.yaw), dy * 1.4);
-        if (dist < obj.angle && dist < bestScore) {
-          best = obj;
-          bestScore = dist;
+    function openHubDesktop() {
+      State.sensorMode = "drag";
+      State.sensorReady = false;
+      State.desktopSim = true;
+      State.screen = "hub";
+    }
+
+    function createScene(id) {
+      const meta = SceneMeta[id];
+      const scene = { id, meta, timer: meta.duration, objects: [], data: {} };
+      if (id === "coop") {
+        scene.data = { holding: "", feedPlaced: 0, petsDone: 0, eggsCollected: 0 };
+        const eggKind = getEggQuality();
+        scene.objects = [
+          { id: "hopper", kind: "hopper", label: "干草料斗", action: "拿干草", yaw: -60, pitch: -6, angle: 13 },
+          { id: "trough1", kind: "trough", label: "食槽 1", action: "放干草", yaw: 6, pitch: -18, angle: 12, filled: false },
+          { id: "trough2", kind: "trough", label: "食槽 2", action: "放干草", yaw: 26, pitch: -18, angle: 12, filled: false },
+          { id: "trough3", kind: "trough", label: "食槽 3", action: "放干草", yaw: 46, pitch: -18, angle: 12, filled: false },
+          { id: "chickA", kind: "chicken", label: "米粒", action: "摸摸", yaw: -28, baseYaw: -28, pitch: -24, angle: 16, color: "#fff6d7", pet: false, bob: 0, wander: 0, mood: "idle" },
+          { id: "chickB", kind: "chicken", label: "栗栗", action: "摸摸", yaw: 66, baseYaw: 66, pitch: -22, angle: 16, color: "#c98242", pet: false, bob: 1.8, wander: 1.1, mood: "idle" },
+          { id: "chickC", kind: "chicken", label: "小葵", action: "摸摸", yaw: -86, baseYaw: -86, pitch: -25, angle: 16, color: "#ffd85e", pet: false, bob: 3, wander: 2.2, mood: "idle" },
+          { id: "egg1", kind: "egg", label: eggKind === "silverEgg" ? "银星蛋" : "普通蛋", action: "拾取", yaw: -42, pitch: -35, angle: 14, collected: false, quality: eggKind },
+          { id: "egg2", kind: "egg", label: eggKind === "silverEgg" ? "银星蛋" : "普通蛋", action: "拾取", yaw: 90, pitch: -34, angle: 14, collected: false, quality: eggKind }
+        ];
+      } else if (id === "dock") {
+        scene.data = {
+          phase: "search",
+          activeId: randomChoice(["spot1", "spot2", "spot3"]),
+          castId: "",
+          wait: 0,
+          bite: 0,
+          fightTime: 0,
+          fishY: 0.5,
+          boxY: 0.5,
+          boxVel: 0,
+          progress: 28,
+          catches: 0
+        };
+        scene.objects = [
+          { id: "spot1", kind: "spot", label: "左侧水花", action: "抛竿", yaw: -58, pitch: -12, angle: 15 },
+          { id: "spot2", kind: "spot", label: "近岸水花", action: "抛竿", yaw: 12, pitch: -14, angle: 15 },
+          { id: "spot3", kind: "spot", label: "远处水花", action: "抛竿", yaw: 78, pitch: -13, angle: 15 }
+        ];
+      } else if (id === "orchard") {
+        scene.data = { holding: "", sorted: 0, jamDone: 0, honey: false };
+        scene.objects = [
+          { id: "tree1", kind: "tree", label: "苹果树", action: "摇一摇", yaw: -70, pitch: -12, angle: 18, shaken: false },
+          { id: "tree2", kind: "tree", label: "野莓树", action: "摇一摇", yaw: 4, pitch: -10, angle: 18, shaken: false },
+          { id: "tree3", kind: "tree", label: "杏果树", action: "摇一摇", yaw: 76, pitch: -12, angle: 18, shaken: false },
+          { id: "hive", kind: "hive", label: "蜂箱", action: "收蜂蜜", yaw: -36, pitch: -10, angle: 14, taken: false },
+          { id: "crate", kind: "crateGood", label: "完好果筐", action: "放入好果", yaw: -14, pitch: -21, angle: 14 },
+          { id: "press", kind: "press", label: "压榨桶", action: "做成果酱", yaw: 46, pitch: -21, angle: 14 }
+        ];
+      } else if (id === "market") {
+        scene.data = { panel: false, actions: 0, earned: 0 };
+        scene.objects = [
+          { id: "board", kind: "board", label: "订单公告板", action: "查看订单", yaw: 2, pitch: -16, angle: 16 },
+          { id: "stallGrocer", kind: "stallGrocer", label: "杂货摊", action: "快速出售", yaw: -70, pitch: -10, angle: 15 },
+          { id: "stallFish", kind: "stallFish", label: "鱼贩摊", action: "快速出售", yaw: 72, pitch: -10, angle: 15 },
+          { id: "stallCraft", kind: "stallCraft", label: "手作摊", action: "快速出售", yaw: 38, pitch: -11, angle: 15 }
+        ];
+      }
+      return scene;
+    }
+
+    function enterScene(id) {
+      Audio.ensure();
+      State.currentScene = createScene(id);
+      State.result = null;
+      State.screen = "playing";
+      State.needsCalibration = State.sensorMode === "gyro";
+      calibrate();
+      setToast(`${SceneMeta[id].name} · ${SceneMeta[id].core}`, 2.1);
+    }
+
+    function leaveScene() {
+      State.currentScene = null;
+      State.screen = "hub";
+      State.result = null;
+      State.hoverId = null;
+      State.press.down = false;
+      saveGame();
+    }
+
+    function finishScene(success, body, rewardLines) {
+      if (!State.currentScene) return;
+      const id = State.currentScene.id;
+      State.save.sceneClears[id] = (State.save.sceneClears[id] || 0) + (success ? 1 : 0);
+      const usedTime = Math.max(0, Math.round(SceneMeta[id].duration - State.currentScene.timer));
+      const best = State.save.sceneBest[id];
+      if (success && (!best || usedTime < best)) State.save.sceneBest[id] = usedTime;
+      saveGame();
+      State.result = {
+        id,
+        title: success ? `${SceneMeta[id].name} 已完成` : `${SceneMeta[id].name} 暂停`,
+        body: body || "",
+        rewardLines: rewardLines || [],
+        best: State.save.sceneBest[id] || 0
+      };
+      State.screen = "result";
+      Audio.beep(success ? "win" : "miss");
+    }
+
+    function updateScene(dt) {
+      const scene = State.currentScene;
+      if (!scene) return;
+      scene.timer -= dt;
+      if (scene.timer <= 0) {
+        scene.timer = 0;
+        finishScene(false, "时间到了，这个场景还没完全跑通。", []);
+        return;
+      }
+
+      if (scene.id === "coop") updateCoopScene(scene, dt);
+      if (scene.id === "dock") updateDockScene(scene, dt);
+      if (scene.id === "orchard") updateOrchardScene(scene, dt);
+
+      findHover();
+    }
+
+    function updateDockScene(scene, dt) {
+      const d = scene.data;
+      if (d.phase === "wait") {
+        d.wait -= dt;
+        if (d.wait <= 0) {
+          d.phase = "bite";
+          d.bite = 0.82;
+          setToast("鱼漂动了，快点一下", 1);
+          Audio.beep("bite");
+          vibrate(20);
+        }
+      } else if (d.phase === "bite") {
+        d.bite -= dt;
+        if (d.bite <= 0) {
+          d.phase = "search";
+          d.activeId = randomChoice(["spot1", "spot2", "spot3"]);
+          d.progress = 28;
+          setToast("没咬稳，换个方向再试试", 1.2);
+        }
+      } else if (d.phase === "fight") {
+        d.fightTime += dt;
+        const fishWave = Math.sin(d.fightTime * 2.8) * 0.28 + Math.sin(d.fightTime * 5.4) * 0.1;
+        d.fishY = clamp(0.5 + fishWave, 0.08, 0.92);
+        d.boxVel += (State.press.down ? -1 : 1) * dt * 1.2;
+        d.boxVel *= 0.9;
+        d.boxY = clamp(d.boxY + d.boxVel, 0.06, 0.94);
+        const size = 0.18;
+        if (Math.abs(d.fishY - d.boxY) < size) d.progress = Math.min(100, d.progress + dt * 34);
+        else d.progress = Math.max(0, d.progress - dt * 22);
+        if (d.progress >= 100) {
+          d.catches += 1;
+          addInventory("fish", 1);
+          if (Math.random() < 0.5) addInventory("shell", 1);
+          d.phase = "search";
+          d.activeId = randomChoice(["spot1", "spot2", "spot3"]);
+          d.progress = 28;
+          setToast(`起钩成功 ${d.catches}/2`, 1.2);
+          Audio.beep("harvest");
+          if (d.catches >= 2) {
+            finishScene(true, "听声、抛竿、拉扯这条线已经跑通。", ["鲜鱼 +2", "可能掉落贝壳"]);
+          }
+        } else if (d.progress <= 0) {
+          d.phase = "search";
+          d.activeId = randomChoice(["spot1", "spot2", "spot3"]);
+          d.progress = 28;
+          d.boxVel = 0;
+          setToast("它挣脱了，再听听水花方向", 1.2);
+          Audio.beep("miss");
         }
       }
-      State.hoverId = best ? best.id : null;
-      return best;
     }
 
-    function getNextObjective() {
-      if (State.holding !== "hay" && State.feedPlaced < Config.tasks.hay && State.hayLeft > 0) {
-        const hopper = State.objects.find(o => o.type === "hopper");
-        return hopper ? { obj: hopper, text: "先看向料斗，拿一束干草" } : null;
+    function updateCoopScene(scene, dt) {
+      for (const chick of scene.objects.filter(o => o.kind === "chicken")) {
+        chick.bob += dt * 3.2;
+        chick.wander += dt;
+        chick.yaw = normDeg(chick.baseYaw + Math.sin(chick.wander * 0.68) * (chick.mood === "eat" ? 2.4 : 5));
+        if (chick.mood === "happy" && Math.random() < dt * 0.5) {
+          const p = project(chick);
+          if (p) burstHearts(p.x, p.y - 36);
+        }
       }
-      if (State.holding === "hay") {
-        const trough = State.objects.find(o => o.type === "trough" && o.state === "empty");
-        return trough ? { obj: trough, text: "看向空食槽，把干草放好" } : null;
+    }
+
+    function updateOrchardScene(scene, dt) {
+      for (const fruit of scene.objects.filter(o => o.kind === "fruit")) {
+        fruit.bounce = (fruit.bounce || 0) + dt * 5;
       }
-      const chicken = State.objects.find(o => o.type === "chicken" && !o.pet);
-      if (chicken) return { obj: chicken, text: `找到 ${chicken.label}，轻轻摸摸它` };
-      const egg = State.objects.find(o => o.type === "egg" && o.state !== "collected");
-      if (egg) return { obj: egg, text: "地上还有鸡蛋可以拾取" };
+    }
+
+    function getSceneHint() {
+      const scene = State.currentScene;
+      if (!scene) return null;
+      if (scene.id === "coop") {
+        if (scene.data.holding !== "hay" && scene.objects.some(o => o.kind === "trough" && !o.filled)) return { obj: scene.objects.find(o => o.id === "hopper"), text: "先从料斗拿一束干草" };
+        if (scene.data.holding === "hay") return { obj: scene.objects.find(o => o.kind === "trough" && !o.filled), text: "把干草放进空食槽" };
+        const unpet = scene.objects.find(o => o.kind === "chicken" && !o.pet);
+        if (unpet) return { obj: unpet, text: `找到 ${unpet.label}，摸摸它` };
+        return { obj: scene.objects.find(o => o.kind === "egg" && !o.collected), text: "地上还有鸡蛋没捡" };
+      }
+      if (scene.id === "dock") {
+        const active = scene.objects.find(o => o.id === scene.data.activeId);
+        if (scene.data.phase === "search") return { obj: active, text: "跟着咕噜声，把视角对准水花抛竿" };
+        if (scene.data.phase === "bite") return { obj: active, text: "鱼漂沉了，马上点一下起钩" };
+        return { obj: active, text: "按住屏幕让绿色捕获框追住鱼标" };
+      }
+      if (scene.id === "orchard") {
+        const tree = scene.objects.find(o => o.kind === "tree" && !o.shaken);
+        if (tree) return { obj: tree, text: "先摇树，把果子打下来" };
+        if (!scene.data.holding) return { obj: scene.objects.find(o => o.kind === "fruit" && !o.collected), text: "捡起地上的果子" };
+        if (scene.data.holding === "good") return { obj: scene.objects.find(o => o.id === "crate"), text: "把完好果放进果筐" };
+        return { obj: scene.objects.find(o => o.id === "press"), text: "把加工果放进压榨桶" };
+      }
+      if (scene.id === "market") {
+        if (scene.data.panel) return null;
+        return { obj: scene.objects.find(o => o.id === "board"), text: "先看订单板，或者去摊位快速出售" };
+      }
       return null;
     }
 
-    function interact() {
-      if (State.screen !== "playing") return;
-      const obj = findHover();
-      if (!obj) {
-        State.toast = "再靠近一点点";
-        State.toastTimer = 0.8;
+    function interactSceneObject(obj) {
+      const scene = State.currentScene;
+      if (!scene || !obj) {
+        setToast("再靠近一点点", 0.9);
         Audio.beep("miss");
         return;
       }
-      if (obj.type === "hopper") {
-        if (State.holding === "hay") {
-          State.toast = "手里已经有干草了";
-          State.toastTimer = 1;
-          return;
-        }
-        if (State.hayLeft <= 0) {
-          State.toast = "干草拿完啦";
-          State.toastTimer = 1;
-          return;
-        }
-        State.hayLeft -= 1;
-        State.holding = "hay";
-        addFloater("手持干草", Config.W - 82, Config.H - 92, "#ffe9a8");
-        Audio.beep("hay");
-        vibrate(25);
-      } else if (obj.type === "trough") {
-        if (State.holding !== "hay") {
-          State.toast = "先去料斗拿干草";
-          State.toastTimer = 1.2;
+
+      if (scene.id === "coop") return interactCoop(scene, obj);
+      if (scene.id === "dock") return interactDock(scene, obj);
+      if (scene.id === "orchard") return interactOrchard(scene, obj);
+      if (scene.id === "market") return interactMarket(scene, obj);
+    }
+
+    function interactDock(scene, obj) {
+      const d = scene.data;
+      if (d.phase === "search") {
+        if (obj.id !== d.activeId) {
+          setToast("水花不太对，换个方向听听", 1);
           Audio.beep("miss");
           return;
         }
-        obj.state = "filled";
-        obj.filledAt = performance.now();
-        State.holding = null;
-        State.feedPlaced += 1;
-        State.lastFedId = obj.id;
-        State.toast = "干草放好啦";
-        State.toastTimer = 1;
+        if (!useStamina(3)) return;
+        d.phase = "wait";
+        d.castId = obj.id;
+        d.wait = 1.05;
+        setToast("鱼线甩出去啦", 1);
         Audio.beep("place");
-        vibrate(35);
-        nudgeChickenToEat();
-        const p = project(obj) || { x: Config.W / 2, y: Config.H / 2 };
-        sparkle(p.x, p.y - 8);
-        checkMilestones();
-      } else if (obj.type === "chicken") {
-        if (!obj.pet) {
-          obj.pet = true;
-          obj.state = "happy";
-          obj.happyTimer = 4.5;
-          State.petsDone += 1;
-          checkMilestones();
-          const p = project(obj) || { x: Config.W / 2, y: Config.H / 2 };
-          burstHearts(p.x, p.y - 36, obj.color);
-          addFloater("+好感", p.x, p.y - 64, "#ff7aa8");
-          Audio.beep("pet");
-          vibrate([20, 20, 30]);
-        } else {
-          State.toast = `${obj.label} 已经被摸摸过啦`;
-          State.toastTimer = 1.1;
-          Audio.beep("hay");
-        }
-      } else if (obj.type === "egg") {
-        obj.state = "collected";
-        State.eggsCollected += 1;
-        State.collectedEggs.push(obj.quality);
-        checkMilestones();
-        const p = project(obj) || { x: Config.W / 2, y: Config.H / 2 };
-        addFloater(`+1 ${obj.quality.label}`, p.x, p.y - 28, obj.quality.sparkle);
-        sparkle(p.x, p.y);
-        Audio.beep("egg");
-        vibrate(25);
-      }
-      if (State.feedPlaced >= 3 && State.petsDone >= 3 && State.eggsCollected >= 2) {
-        setTimeout(() => endGame(false), 550);
       }
     }
 
-    function checkMilestones() {
-      const marks = [
-        ["fed", State.feedPlaced >= Config.tasks.hay, "三格食槽都放好啦"],
-        ["pet", State.petsDone >= Config.tasks.pets, "三只小鸡都开心啦"],
-        ["egg", State.eggsCollected >= Config.tasks.eggs, "今天的鸡蛋收齐啦"]
-      ];
-      for (const [key, done, text] of marks) {
-        if (done && !State.milestones[key]) {
-          State.milestones[key] = true;
-          State.toast = text;
-          State.toastTimer = 1.6;
-          sparkle(Config.W / 2, 210);
+    function interactCoop(scene, obj) {
+      const d = scene.data;
+      if (obj.kind === "hopper") {
+        d.holding = "hay";
+        setToast("手持干草", 1);
+        Audio.beep("pickup");
+        return;
+      }
+      if (obj.kind === "trough") {
+        if (!d.holding) {
+          setToast("先去料斗拿干草", 1);
+          Audio.beep("miss");
           return;
         }
+        if (obj.filled) return;
+        obj.filled = true;
+        d.holding = "";
+        d.feedPlaced += 1;
+        setToast(`食槽放好啦 ${d.feedPlaced}/3`, 1);
+        Audio.beep("place");
+        sparkleAtObject(obj, "#fff1a2");
+        scene.objects.filter(o => o.kind === "chicken").forEach((chick) => { chick.mood = "eat"; });
+        if (d.feedPlaced >= 3 && d.petsDone >= 3 && d.eggsCollected >= 2) finishCoopScene(scene);
+        return;
+      }
+      if (obj.kind === "chicken") {
+        if (obj.pet) {
+          setToast(`${obj.label} 今天已经摸过啦`, 1);
+          return;
+        }
+        obj.pet = true;
+        obj.mood = "happy";
+        d.petsDone += 1;
+        State.save.friendship[obj.id] = clamp((State.save.friendship[obj.id] || 0) + 16, 0, 1000);
+        burstHeartsAtObject(obj);
+        addFloater("+好感", Config.W * 0.7, 132, "#ff82b0");
+        Audio.beep("good");
+        if (d.feedPlaced >= 3 && d.petsDone >= 3 && d.eggsCollected >= 2) finishCoopScene(scene);
+        return;
+      }
+      if (obj.kind === "egg" && !obj.collected) {
+        obj.collected = true;
+        obj.hidden = true;
+        d.eggsCollected += 1;
+        addInventory(obj.quality, 1);
+        addFloater(`+1 ${obj.label}`, Config.W * 0.76, 154, obj.quality === "silverEgg" ? "#edf7ff" : "#fff7d6");
+        Audio.beep("harvest");
+        if (d.feedPlaced >= 3 && d.petsDone >= 3 && d.eggsCollected >= 2) finishCoopScene(scene);
       }
     }
 
-    function nudgeChickenToEat() {
-      const hungry = State.objects
-        .filter(o => o.type === "chicken" && o.state !== "happy")
-        .sort((a, b) => Math.abs(normDeg(a.yaw - State.look.yaw)) - Math.abs(normDeg(b.yaw - State.look.yaw)));
-      const chick = hungry[0];
-      if (chick) {
-        chick.state = "eat";
-        chick.eatTimer = 3.8;
-        State.toast = `${chick.label} 听见干草声，跑去吃饭啦`;
-        State.toastTimer = 1.8;
+    function finishCoopScene(scene) {
+      finishScene(true, "照料、陪伴、拾蛋这条治愈回路已经能直接体验。", [getEggQuality() === "silverEgg" ? "银星蛋 +2" : "鸡蛋 +2", "三只小鸡好感提升"]);
+    }
+
+    function spawnOrchardFruit(scene, baseYaw, goodFirst) {
+      const kinds = goodFirst ? ["good", "process"] : ["process", "good"];
+      kinds.forEach((type, index) => {
+        scene.objects.push({
+          id: `fruit-${baseYaw}-${index}-${Math.random().toString(36).slice(2, 5)}`,
+          kind: "fruit",
+          label: type === "good" ? "完好果" : "加工果",
+          action: "捡起",
+          yaw: baseYaw + (index === 0 ? -8 : 6),
+          pitch: -28,
+          angle: 12,
+          fruitType: type,
+          collected: false,
+          bounce: index * 0.9
+        });
+      });
+    }
+
+    function interactOrchard(scene, obj) {
+      const d = scene.data;
+      if (obj.kind === "tree" && !obj.shaken) {
+        if (!useStamina(2)) return;
+        obj.shaken = true;
+        obj.action = "已收过";
+        spawnOrchardFruit(scene, obj.yaw, Math.random() > 0.35);
+        setToast("树冠抖了抖，果子掉下来啦", 1.2);
+        Audio.beep("good");
+        return;
       }
+      if (obj.kind === "hive" && !obj.taken) {
+        if (!useStamina(1)) return;
+        obj.taken = true;
+        addInventory("honey", 1);
+        d.honey = true;
+        setToast("蜂蜜收好啦", 1);
+        Audio.beep("harvest");
+        checkOrchardFinish(scene);
+        return;
+      }
+      if (obj.kind === "fruit" && !obj.collected) {
+        d.holding = obj.fruitType;
+        obj.collected = true;
+        obj.hidden = true;
+        setToast(obj.fruitType === "good" ? "拿起完好果" : "拿起加工果", 1);
+        Audio.beep("pickup");
+        return;
+      }
+      if (obj.kind === "crateGood" && d.holding === "good") {
+        addInventory("berry", 1);
+        d.sorted += 1;
+        d.holding = "";
+        setToast(`完好果入筐 ${d.sorted}/2`, 1);
+        Audio.beep("place");
+        checkOrchardFinish(scene);
+        return;
+      }
+      if (obj.kind === "press" && d.holding === "process") {
+        addInventory("jam", 1);
+        d.jamDone = 1;
+        d.holding = "";
+        setToast("压榨完成，得到一罐果酱", 1.2);
+        Audio.beep("harvest");
+        checkOrchardFinish(scene);
+        return;
+      }
+      if (obj.kind === "crateGood" || obj.kind === "press") {
+        setToast(d.holding ? "这个去另一边更合适" : "先捡起果子再处理", 1.1);
+        Audio.beep("miss");
+      }
+    }
+
+    function checkOrchardFinish(scene) {
+      const d = scene.data;
+      if (d.sorted >= 2 && d.jamDone >= 1 && d.honey) finishScene(true, "摇树、分拣、压榨这一套流程可以直接试玩。", ["鲜果 +2", "果酱 +1", "蜂蜜 +1"]);
+    }
+
+    function interactMarket(scene, obj) {
+      if (obj.id === "board") {
+        scene.data.panel = !scene.data.panel;
+        setToast(scene.data.panel ? "订单板打开了" : "订单板收起", 0.8);
+        return;
+      }
+      if (obj.id === "stallGrocer") return marketQuickSell(scene, ["egg", "berry"], "农货卖出");
+      if (obj.id === "stallFish") return marketQuickSell(scene, ["fish", "shell"], "海货卖出");
+      if (obj.id === "stallCraft") return marketQuickSell(scene, ["silverEgg", "jam", "honey"], "手作卖出");
+    }
+
+    function getSellPrice(key) {
+      const base = { egg: 50, silverEgg: 85, fish: 70, shell: 24, berry: 28, jam: 115, honey: 92 };
+      let price = base[key] || 20;
+      if (State.save.weather === "晴" && key === "fish") price += 16;
+      if (State.save.weather === "海风" && key === "shell") price += 8;
+      return price;
+    }
+
+    function marketQuickSell(scene, list, label) {
+      const found = list.find((key) => (State.save.inventory[key] || 0) > 0);
+      if (!found) {
+        setToast("背包里没有对应货物", 1);
+        Audio.beep("miss");
+        return;
+      }
+      removeInventory({ [found]: 1 });
+      const price = getSellPrice(found);
+      State.save.gold += price;
+      scene.data.actions += 1;
+      scene.data.earned += price;
+      addFloater(`+${price}G`, Config.W * 0.74, 126, "#ffe593");
+      setToast(`${label}：${InventoryLabels[found]} +${price}G`, 1.2);
+      Audio.beep("coin");
+      saveGame();
+      if (scene.data.actions >= 2) finishScene(true, "订单交付和动态售价都已经挂上了。", [`本次赚到 ${scene.data.earned}G`]);
+    }
+
+    function handleSceneOverlayTap(x, y) {
+      const scene = State.currentScene;
+      if (!scene) return false;
+
+      if (scene.id === "dock") {
+        if (scene.data.phase === "bite") {
+          scene.data.phase = "fight";
+          scene.data.fightTime = 0;
+          scene.data.boxY = 0.54;
+          scene.data.boxVel = 0;
+          scene.data.progress = 26;
+          setToast("钩住了，稳住捕获框", 1.1);
+          Audio.beep("good");
+          return true;
+        }
+        return false;
+      }
+
+      if (scene.id === "market" && scene.data.panel) {
+        if (hit(x, y, 38, 158, 284, 230)) {
+          for (let i = 0; i < State.save.marketOrders.length; i++) {
+            const oy = 194 + i * 58;
+            if (hit(x, y, 52, oy - 18, 256, 42)) {
+              const order = State.save.marketOrders[i];
+              if (order.done) {
+                setToast("这个订单今天已经交过了", 1);
+                return true;
+              }
+              if (!hasInventory(order.needs)) {
+                setToast(`缺少：${formatNeed(order.needs)}`, 1.2);
+                Audio.beep("miss");
+                return true;
+              }
+              removeInventory(order.needs);
+              order.done = true;
+              State.save.gold += order.gold;
+              State.save.rep += order.rep;
+              scene.data.actions += 1;
+              scene.data.earned += order.gold;
+              addFloater(`+${order.gold}G`, 286, 128, "#ffe593");
+              setToast(`${order.title} 已交付`, 1.1);
+              Audio.beep("coin");
+              saveGame();
+              if (scene.data.actions >= 2) finishScene(true, "集市的订单交付和即时变现已经具备基础回路。", [`本次赚到 ${scene.data.earned}G`]);
+              return true;
+            }
+          }
+        }
+        if (hit(x, y, 248, 166, 58, 24)) {
+          scene.data.panel = false;
+          return true;
+        }
+        return true;
+      }
+      return false;
     }
 
     function burstHearts(x, y) {
@@ -523,61 +902,44 @@
           type: "heart",
           x, y,
           vx: (Math.random() - 0.5) * 55,
-          vy: -40 - Math.random() * 45,
-          life: 0.85 + Math.random() * 0.35,
-          max: 1.2,
-          size: 8 + Math.random() * 7
+          vy: -42 - Math.random() * 44,
+          life: 0.86 + Math.random() * 0.34,
+          max: 1.16,
+          size: 8 + Math.random() * 7,
+          color: "#ff6f9c"
         });
       }
     }
-    function sparkle(x, y) {
+    function sparkle(x, y, color = "#fff3aa") {
       for (let i = 0; i < 12; i++) {
         State.particles.push({
           type: "spark",
           x, y,
-          vx: (Math.random() - 0.5) * 85,
+          vx: (Math.random() - 0.5) * 86,
           vy: (Math.random() - 0.7) * 80,
-          life: 0.55,
-          max: 0.55,
-          size: 3 + Math.random() * 4
+          life: 0.56,
+          max: 0.56,
+          size: 3 + Math.random() * 4,
+          color
         });
       }
     }
     function addFloater(text, x, y, color) {
       State.floaters.push({ text, x, y, color, life: 1.1, max: 1.1 });
     }
+    function sparkleAtObject(obj, color) {
+      const p = project(obj);
+      if (p) sparkle(p.x, p.y - 8, color);
+    }
+    function burstHeartsAtObject(obj) {
+      const p = project(obj);
+      if (p) burstHearts(p.x, p.y - 34);
+    }
 
     function update(dt) {
       updateLook();
-      if (State.screen === "playing") {
-        State.timeLeft -= dt;
-        if (State.timeLeft <= 0) {
-          State.timeLeft = 0;
-          endGame(true);
-        }
-        for (const o of State.objects) {
-          if (o.type === "chicken") {
-            o.bob += dt * 3;
-            o.wander += dt;
-            if (o.state === "eat") {
-              o.eatTimer = Math.max(0, (o.eatTimer || 0) - dt);
-              o.yaw += Math.sin(performance.now() * 0.001 + o.bob) * dt * 4;
-              if (o.eatTimer <= 0) o.state = o.pet ? "happy" : "idle";
-            } else if (o.state === "happy") {
-              o.happyTimer = Math.max(0, (o.happyTimer || 0) - dt);
-              o.yaw = normDeg(o.baseYaw + Math.sin(o.wander * 1.8) * 2.5);
-              if (o.happyTimer <= 0) o.state = "idle";
-            } else {
-              o.yaw = normDeg(o.baseYaw + Math.sin(o.wander * 0.65) * 5);
-            }
-            if (o.state === "happy" && Math.random() < dt * 0.55) {
-              const p = project(o);
-              if (p) burstHearts(p.x, p.y - 35);
-            }
-          }
-        }
-        findHover();
-      }
+      if (State.screen === "playing") updateScene(dt);
+
       for (let i = State.particles.length - 1; i >= 0; i--) {
         const p = State.particles[i];
         p.life -= dt;
@@ -595,49 +957,51 @@
       if (State.toastTimer > 0) State.toastTimer -= dt;
     }
 
-    function drawBackground() {
-      const w = Config.W, h = Config.H;
-      const grd = ctx.createLinearGradient(0, 0, 0, h);
-      grd.addColorStop(0, "#f9d58c");
-      grd.addColorStop(0.38, "#f5bf72");
-      grd.addColorStop(0.39, "#8b5b35");
-      grd.addColorStop(1, "#5a3828");
+    function drawGradient(top, mid, bottom) {
+      const grd = ctx.createLinearGradient(0, 0, 0, Config.H);
+      grd.addColorStop(0, top);
+      grd.addColorStop(0.42, mid);
+      grd.addColorStop(0.43, bottom);
+      grd.addColorStop(1, bottom);
       ctx.fillStyle = grd;
-      ctx.fillRect(0, 0, w, h);
+      ctx.fillRect(0, 0, Config.W, Config.H);
+    }
 
-      const sunX = w * 0.5 - normDeg(State.look.yaw) * 1.2;
-      ctx.save();
-      ctx.globalAlpha = 0.28;
-      ctx.fillStyle = "#fff0b7";
-      ctx.beginPath();
-      ctx.moveTo(sunX - 36, 120);
-      ctx.lineTo(sunX + 46, 120);
-      ctx.lineTo(sunX + 180, h);
-      ctx.lineTo(sunX - 160, h);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-
-      drawWindow(180 - normDeg(State.look.yaw - 4) * 1.1, 106);
-      drawWallProp(-110, "草捆");
-      drawWallProp(118, "木桶");
-
-      ctx.fillStyle = "#70462e";
-      ctx.fillRect(0, 385, w, h - 385);
-      for (let y = 398; y < h; y += 34) {
-        ctx.strokeStyle = "rgba(55, 32, 22, .32)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y + Math.sin(y) * 8);
-        ctx.stroke();
-      }
-      for (let x = -50; x < w + 80; x += 58) {
-        ctx.strokeStyle = "rgba(255, 222, 160, .08)";
-        ctx.beginPath();
-        ctx.moveTo(x - State.look.yaw * 0.25, 390);
-        ctx.lineTo(x + 28 - State.look.yaw * 0.4, h);
-        ctx.stroke();
+    function drawBackgroundForScene() {
+      const id = State.currentScene.id;
+      const yaw = State.look.yaw;
+      if (id === "coop") {
+        drawGradient("#f7d48f", "#f0bf73", "#5a3828");
+        ctx.fillStyle = "#70462e";
+        ctx.fillRect(0, 386, Config.W, 254);
+        drawWindow(180 - normDeg(yaw - 4) * 1.1, 106);
+        drawWallProp(-110, "草捆");
+        drawWallProp(118, "木桶");
+      } else if (id === "dock") {
+        drawGradient("#74b5db", "#fee0a9", "#4f6b74");
+        ctx.fillStyle = "#4e9fbe";
+        ctx.fillRect(0, 374, Config.W, 266);
+        for (let i = 0; i < 7; i++) {
+          ctx.strokeStyle = "rgba(255,255,255,0.16)";
+          ctx.beginPath();
+          ctx.moveTo(0, 392 + i * 30 + Math.sin(i + yaw * 0.03) * 8);
+          ctx.lineTo(Config.W, 388 + i * 30 + Math.cos(i + yaw * 0.02) * 8);
+          ctx.stroke();
+        }
+        ctx.fillStyle = "#9b744d";
+        ctx.fillRect(0, 520, Config.W, 120);
+      } else if (id === "orchard") {
+        drawGradient("#b6e4ff", "#e9d48d", "#6a914a");
+        ctx.fillStyle = "#8cb764";
+        ctx.fillRect(0, 392, Config.W, 248);
+        drawWindmill(274 - yaw * 1.1, 132);
+      } else if (id === "market") {
+        drawGradient("#7a6fa4", "#e4a670", "#4d3256");
+        ctx.fillStyle = "#5b3c63";
+        ctx.fillRect(0, 398, Config.W, 242);
+        drawLantern(84 - yaw * 1.4, 140);
+        drawLantern(180 - yaw * 1.1, 114);
+        drawLantern(276 - yaw * 1.35, 140);
       }
     }
 
@@ -656,47 +1020,105 @@
       ctx.stroke();
       ctx.restore();
     }
-
-    function drawWallProp(yaw, label) {
+    function drawWallProp(yaw, type) {
       const dx = normDeg(yaw - State.look.yaw);
       if (Math.abs(dx) > 90) return;
-      const x = Config.W / 2 + dx * 2.0;
+      const x = Config.W / 2 + dx * 2;
       ctx.save();
-      ctx.globalAlpha = 0.45;
-      ctx.fillStyle = label === "草捆" ? "#c39142" : "#6f3f27";
+      ctx.globalAlpha = 0.46;
+      ctx.fillStyle = type === "草捆" ? "#c39142" : "#6f3f27";
       roundRect(x - 26, 292, 52, 44, 10, true);
       ctx.restore();
     }
-
-    function drawObjects() {
-      const ordered = State.objects.map(o => ({ o, p: project(o) })).filter(v => v.p);
+    function drawWindmill(x, y) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.fillStyle = "#d5b386";
+      ctx.beginPath();
+      ctx.moveTo(0, -16);
+      ctx.lineTo(34, 72);
+      ctx.lineTo(-34, 72);
+      ctx.closePath();
+      ctx.fill();
+      ctx.translate(0, -4);
+      ctx.strokeStyle = "#8d6a47";
+      ctx.lineWidth = 6;
+      const t = performance.now() * 0.002;
+      for (let i = 0; i < 4; i++) {
+        const a = t + i * Math.PI / 2;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(a) * 34, Math.sin(a) * 34);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    function drawLantern(x, y) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.strokeStyle = "rgba(255,240,210,0.42)";
+      ctx.beginPath();
+      ctx.moveTo(0, -40);
+      ctx.lineTo(0, 0);
+      ctx.stroke();
+      ctx.fillStyle = "#ffdd8a";
+      roundRect(-12, 0, 24, 28, 8, true);
+      ctx.restore();
+    }
+    function drawSceneObjects() {
+      const ordered = getSceneObjects().map((o) => ({ o, p: project(o) })).filter((entry) => entry.p);
       ordered.sort((a, b) => a.p.y - b.p.y);
-      for (const { o, p } of ordered) {
-        const hover = State.hoverId === o.id;
+      for (const entry of ordered) {
+        const hover = State.hoverId === entry.o.id;
         ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.scale(p.scale, p.scale);
-        if (hover) drawGlow(o);
-        if (o.type === "hopper") drawHopper(o);
-        if (o.type === "trough") drawTrough(o);
-        if (o.type === "chicken") drawChicken(o);
-        if (o.type === "egg") drawEgg(o);
-        if (hover) drawObjectLabel(o);
+        ctx.translate(entry.p.x, entry.p.y);
+        ctx.scale(entry.p.scale, entry.p.scale);
+        if (hover) drawGlow(entry.o);
+        drawObject(entry.o);
+        if (hover && State.currentScene.id !== "market") drawObjectLabel(entry.o);
         ctx.restore();
       }
     }
 
-    function drawGlow(o) {
+    function drawGlow(obj) {
       ctx.save();
-      ctx.globalAlpha = 0.5 + Math.sin(performance.now() * 0.008) * 0.15;
+      ctx.globalAlpha = 0.5 + Math.sin(performance.now() * 0.008) * 0.14;
       ctx.fillStyle = "#fff2a6";
-      const r = o.type === "chicken" ? 34 : 28;
+      const r = obj.kind === "tree" ? 40 : obj.kind === "chicken" ? 34 : 26;
       ctx.beginPath();
-      ctx.ellipse(0, 2, r, r * 0.75, 0, 0, Math.PI * 2);
+      ctx.ellipse(0, 4, r, r * 0.7, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
 
+    function drawObject(obj) {
+      switch (obj.kind) {
+        case "spot": return drawFishSpot(obj);
+        case "hopper": return drawHopper();
+        case "trough": return drawTrough(obj);
+        case "chicken": return drawChicken(obj);
+        case "egg": return drawEgg(obj);
+        case "tree": return drawTree(obj);
+        case "hive": return drawHive(obj);
+        case "crateGood": return drawCrate(obj, "#d39e59", "好果");
+        case "press": return drawPress(obj);
+        case "fruit": return drawFruit(obj);
+        case "board": return drawBoard();
+        case "stallGrocer": return drawStall("#9cc666", "菜");
+        case "stallFish": return drawStall("#6cbad7", "鱼");
+        case "stallCraft": return drawStall("#c9a8f7", "作");
+      }
+    }
+
+    function drawFishSpot(obj) {
+      ctx.strokeStyle = obj.id === State.currentScene.data.activeId ? "#fff4bf" : "rgba(255,255,255,0.42)";
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.ellipse(0, i * 3, 22 - i * 5, 7 - i, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
     function drawHopper() {
       ctx.fillStyle = "#6d4328";
       roundRect(-28, -24, 56, 48, 7, true);
@@ -711,13 +1133,12 @@
       ctx.fillStyle = "#4b2d1e";
       ctx.fillRect(-22, -2, 44, 8);
     }
-
-    function drawTrough(o) {
+    function drawTrough(obj) {
       ctx.fillStyle = "#75462b";
       roundRect(-33, -12, 66, 24, 7, true);
       ctx.fillStyle = "#4d2d1f";
       roundRect(-27, -7, 54, 12, 5, true);
-      if (o.state === "filled") {
+      if (obj.filled) {
         ctx.fillStyle = "#d8ad55";
         for (let i = -22; i <= 18; i += 8) {
           ctx.beginPath();
@@ -726,27 +1147,16 @@
           ctx.lineTo(i + 17, -6);
           ctx.fill();
         }
-        if (State.lastFedId === o.id && performance.now() - (o.filledAt || 0) < 1200) {
-          ctx.save();
-          ctx.globalAlpha = 0.45 + Math.sin(performance.now() * 0.02) * 0.15;
-          ctx.strokeStyle = "#fff0a7";
-          ctx.lineWidth = 3;
-          ctx.beginPath();
-          ctx.ellipse(0, -5, 40, 22, 0, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.restore();
-        }
       }
     }
-
-    function drawChicken(o) {
-      const hop = Math.sin(o.bob) * (o.state === "happy" ? 4 : 1.5);
+    function drawChicken(obj) {
+      const hop = Math.sin(obj.bob) * (obj.mood === "happy" ? 4 : 1.6);
       ctx.translate(0, hop);
-      ctx.fillStyle = "rgba(55, 25, 15, .18)";
+      ctx.fillStyle = "rgba(55,25,15,0.18)";
       ctx.beginPath();
       ctx.ellipse(0, 24, 28, 8, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = o.color;
+      ctx.fillStyle = obj.color;
       ctx.beginPath();
       ctx.ellipse(0, 0, 22, 24, 0, 0, Math.PI * 2);
       ctx.fill();
@@ -771,70 +1181,102 @@
       ctx.moveTo(-8, 21); ctx.lineTo(-12, 31);
       ctx.moveTo(8, 21); ctx.lineTo(12, 31);
       ctx.stroke();
-      if (o.pet) {
-        safeText("♥", -20, -38, 18, "#ff6f9c");
-      }
-      const friendship = getFriendship(o.id);
-      const heartCount = heartsFromFriendship(friendship);
-      if (heartCount > 0) {
-        safeText("♥".repeat(heartCount), 0, 39, 10, "#ff7aa8");
-      }
-      if (o.state === "eat") {
-        ctx.fillStyle = "rgba(255, 236, 164, .92)";
-        roundRect(-30, -61, 60, 21, 8, true);
-        safeText("吃饭中", 0, -50, 11, "#6b4328");
-      }
+      if (obj.pet) safeText("♥", -20, -38, 18, "#ff6f9c");
+      const hearts = heartsFromFriendship(getFriendship(obj.id));
+      if (hearts > 0) safeText("♥".repeat(hearts), 0, 39, 10, "#ff7aa8");
     }
-
-    function drawEgg(o) {
-      ctx.fillStyle = "rgba(55, 25, 15, .18)";
+    function drawEgg(obj) {
+      ctx.fillStyle = "rgba(55,25,15,0.18)";
       ctx.beginPath();
       ctx.ellipse(0, 17, 17, 5, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = o.quality ? o.quality.color : "#fff4d2";
+      ctx.fillStyle = obj.quality === "silverEgg" ? "#edf7ff" : "#fff4d2";
       ctx.beginPath();
       ctx.ellipse(0, 0, 13, 18, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = "rgba(255,255,255,.55)";
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
       ctx.beginPath();
       ctx.ellipse(-4, -6, 4, 7, -0.6, 0, Math.PI * 2);
       ctx.fill();
-      if (o.quality && o.quality.key !== "normal") {
-        safeText("✦", 0, -24, 13, o.quality.sparkle);
+      if (obj.quality === "silverEgg") safeText("✦", 0, -24, 12, "#f2fbff");
+    }
+    function drawTree(obj) {
+      ctx.fillStyle = "#7b4f2d";
+      ctx.fillRect(-8, -4, 16, 44);
+      ctx.fillStyle = obj.shaken ? "#7fbb5d" : "#86c45d";
+      ctx.beginPath();
+      ctx.arc(0, -22, 28, 0, Math.PI * 2);
+      ctx.fill();
+      if (!obj.shaken) {
+        ctx.fillStyle = "#ffb26d";
+        ctx.beginPath(); ctx.arc(-10, -18, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(8, -10, 5, 0, Math.PI * 2); ctx.fill();
       }
     }
-
-    function drawObjectLabel(o) {
-      ctx.fillStyle = "rgba(55, 34, 25, .76)";
-      const isChicken = o.type === "chicken";
-      roundRect(isChicken ? -56 : -42, -58, isChicken ? 112 : 84, isChicken ? 36 : 22, 8, true);
-      safeText(o.action, 0, isChicken ? -49 : -47, 12, "#fff5d2");
-      if (isChicken) {
-        const friendship = getFriendship(o.id);
-        safeText(`${o.label} ${heartsFromFriendship(friendship)}/5心`, 0, -33, 10, "#ffe4a8");
+    function drawHive(obj) {
+      ctx.fillStyle = obj.taken ? "#8d6a49" : "#cfab58";
+      roundRect(-20, -26, 40, 54, 10, true);
+      ctx.strokeStyle = "#8b6935";
+      for (let y = -12; y <= 18; y += 10) {
+        ctx.beginPath();
+        ctx.moveTo(-16, y);
+        ctx.lineTo(16, y);
+        ctx.stroke();
       }
     }
+    function drawCrate(obj, color, label) {
+      ctx.fillStyle = color;
+      roundRect(-28, -16, 56, 32, 8, true);
+      safeText(label, 0, 1, 12, "#5d3a1d");
+    }
+    function drawPress() {
+      ctx.fillStyle = "#8b6d56";
+      roundRect(-26, -22, 52, 44, 8, true);
+      ctx.fillStyle = "#c89f67";
+      roundRect(-10, -8, 20, 30, 5, true);
+      ctx.fillStyle = "#644632";
+      ctx.fillRect(-4, -32, 8, 18);
+    }
+    function drawFruit(obj) {
+      ctx.fillStyle = "rgba(50,25,12,0.18)";
+      ctx.beginPath();
+      ctx.ellipse(0, 14, 18, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.translate(0, Math.sin(obj.bounce || 0) * 4);
+      ctx.fillStyle = obj.fruitType === "good" ? "#ffb364" : "#dd8b59";
+      ctx.beginPath();
+      ctx.arc(0, 0, 14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#7b5d30";
+      ctx.fillRect(-1, -16, 3, 8);
+    }
+    function drawBoard() {
+      ctx.fillStyle = "#7d5638";
+      roundRect(-32, -38, 64, 76, 8, true);
+      ctx.fillStyle = "#f5deb3";
+      roundRect(-26, -30, 52, 60, 5, true);
+      safeText("订单", 0, -8, 14, "#6c4a2d");
+      safeText("查看", 0, 16, 12, "#94714b");
+    }
+    function drawStall(color, tag) {
+      ctx.fillStyle = color;
+      roundRect(-32, -24, 64, 48, 8, true);
+      ctx.fillStyle = "rgba(255,255,255,0.24)";
+      roundRect(-28, -34, 56, 14, 6, true);
+      safeText(tag, 0, 2, 16, "#46301e");
+    }
+    function drawObjectLabel(obj) {
+      ctx.fillStyle = "rgba(55,34,25,0.78)";
+      const w = obj.kind === "chicken" ? 120 : 90;
+      roundRect(-w / 2, -58, w, obj.kind === "chicken" ? 36 : 22, 8, true);
+      safeText(obj.action, 0, obj.kind === "chicken" ? -49 : -47, 12, "#fff5d2");
+      if (obj.kind === "chicken") safeText(`${obj.label} ${heartsFromFriendship(getFriendship(obj.id))}/5心`, 0, -33, 10, "#ffe4a8");
+    }
 
-    function drawHud() {
-      ctx.fillStyle = "rgba(64, 39, 27, .72)";
-      roundRect(10, 10, 340, 58, 12, true);
-      safeText(`干草 ${State.feedPlaced}/3`, 28, 28, 13, "#fff5d2", "left");
-      safeText(`摸摸 ${State.petsDone}/3`, 28, 51, 13, "#fff5d2", "left");
-      safeText(`鸡蛋 ${State.eggsCollected}/2`, 138, 51, 13, "#fff5d2", "left");
-      safeText(`${Math.ceil(State.timeLeft)}s`, 318, 29, 18, State.timeLeft <= 10 ? "#ffb6a1" : "#fff5d2");
-      safeText(Config.version, 316, 53, 11, "#d8b982");
-      drawFeedingPanel();
-      if (State.holding === "hay") {
-        ctx.fillStyle = "rgba(255, 232, 159, .92)";
-        roundRect(250, 575, 92, 38, 12, true);
-        safeText("手持干草", 296, 594, 13, "#6b4328");
-      }
-      const mode = State.sensorMode === "gyro" ? "陀螺仪+拖动" : "拖动";
-      safeText(State.desktopSim ? "电脑测试" : mode, 181, 29, 12, "#ffe6a8");
-
+    function drawCrosshair() {
       ctx.save();
       ctx.translate(Config.W / 2, Config.H / 2);
-      ctx.strokeStyle = State.hoverId ? "#fff1a2" : "rgba(255,255,255,.72)";
+      ctx.strokeStyle = State.hoverId ? "#fff1a2" : "rgba(255,255,255,0.74)";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(0, 0, 9, 0, Math.PI * 2);
@@ -844,55 +1286,68 @@
       ctx.moveTo(0, 7); ctx.lineTo(0, 16);
       ctx.stroke();
       ctx.restore();
-
-      const hover = State.objects.find(o => o.id === State.hoverId);
-      if (hover) {
-        ctx.fillStyle = "rgba(64, 39, 27, .72)";
-        roundRect(101, 352, 158, 34, 12, true);
-        safeText(`${hover.label} · ${hover.action}`, 180, 369, 14, "#fff5d2");
-      }
-
-      drawObjectiveGuide();
-
-      drawButton("居中", 16, 584, 64, 34);
-      drawButton("结束", 90, 584, 64, 34);
     }
 
-    function drawFeedingPanel() {
-      ctx.save();
-      ctx.fillStyle = "rgba(64, 39, 27, .58)";
-      roundRect(186, 74, 156, 31, 10, true);
-      safeText(`料斗 ${State.hayLeft}`, 213, 89, 12, "#fff1c2");
-      for (let i = 0; i < 3; i++) {
-        const filled = i < State.feedPlaced;
-        ctx.fillStyle = filled ? "#d8ad55" : "rgba(255, 235, 190, .22)";
-        roundRect(254 + i * 24, 81, 17, 16, 5, true);
-        if (filled) {
-          ctx.fillStyle = "#fff0a7";
-          ctx.fillRect(258 + i * 24, 86, 9, 3);
-        }
-      }
-      ctx.restore();
+    function drawHud() {
+      const scene = State.currentScene;
+      ctx.fillStyle = "rgba(43, 31, 26, 0.74)";
+      roundRect(10, 10, 340, 60, 12, true);
+      safeText(scene.meta.name, 28, 27, 13, "#fff3d3", "left");
+      safeText(scene.meta.en, 28, 49, 11, "#dfc594", "left");
+      safeText(`Day ${State.save.day}`, 220, 27, 12, "#fff1cc");
+      safeText(`${Math.ceil(scene.timer)}s`, 318, 27, 18, scene.timer <= 12 ? "#ffba9d" : "#fff3d3");
+      safeText(`${State.save.weather} · ${State.save.stamina}体力`, 258, 49, 11, "#ffe4a5");
+      safeText(Config.version, 322, 49, 11, "#d4bf91");
+      drawSceneProgress();
+      drawHoldingBadge();
+      drawCrosshair();
+      drawObjectiveGuide();
+      drawButton("地图", 16, 584, 64, 34);
+      drawButton("居中", 90, 584, 64, 34);
+      drawButton(State.desktopSim ? "电脑测试" : State.sensorMode === "gyro" ? "陀螺仪+拖动" : "拖动", 202, 584, 142, 34);
+    }
+
+    function drawHoldingBadge() {
+      const scene = State.currentScene;
+      if (!scene) return;
+      let text = "";
+      if (scene.id === "coop") text = scene.data.holding === "hay" ? "手持干草" : "";
+      if (scene.id === "orchard") text = scene.data.holding === "good" ? "手持完好果" : scene.data.holding === "process" ? "手持加工果" : "";
+      if (!text) return;
+      ctx.fillStyle = "rgba(255, 232, 159, 0.92)";
+      roundRect(228, 538, 114, 34, 11, true);
+      safeText(text, 285, 555, 13, "#6b4328");
+    }
+
+    function drawSceneProgress() {
+      const scene = State.currentScene;
+      ctx.fillStyle = "rgba(43, 31, 26, 0.62)";
+      roundRect(18, 80, 324, 30, 11, true);
+      let text = "";
+      if (scene.id === "coop") text = `干草 ${scene.data.feedPlaced}/3 · 摸摸 ${scene.data.petsDone}/3 · 鸡蛋 ${scene.data.eggsCollected}/2`;
+      if (scene.id === "dock") text = scene.data.phase === "fight" ? `拉扯中 ${Math.round(scene.data.progress)}% · 上钩 ${scene.data.catches}/2` : `水花定位 · 已钓 ${scene.data.catches}/2`;
+      if (scene.id === "orchard") text = `好果 ${scene.data.sorted}/2 · 果酱 ${scene.data.jamDone}/1 · 蜂蜜 ${scene.data.honey ? 1 : 0}/1`;
+      if (scene.id === "market") text = `今日成交 ${scene.data.actions}/2 · 已赚 ${scene.data.earned}G`;
+      safeText(text, 180, 95, 12, "#fff1c2");
     }
 
     function drawObjectiveGuide() {
-      const next = getNextObjective();
-      if (!next || State.hoverId === next.obj.id) return;
-      const obj = next.obj;
+      const guide = getSceneHint();
+      if (!guide || !guide.obj) return;
+      if (State.hoverId === guide.obj.id) return;
+      const obj = guide.obj;
       const delta = normDeg(obj.yaw - State.look.yaw);
-      const offscreen = Math.abs(delta) > Config.fov / 2 - 8;
       const yDelta = obj.pitch - State.look.pitch;
-
+      const offscreen = Math.abs(delta) > Config.fov / 2 - 8;
       ctx.save();
-      ctx.fillStyle = "rgba(64, 39, 27, .68)";
-      roundRect(38, 112, 284, 30, 11, true);
-      safeText(next.text, 180, 127, 12, "#fff1c2");
-
+      ctx.fillStyle = "rgba(64,39,27,0.7)";
+      roundRect(34, 116, 292, 30, 11, true);
+      safeText(guide.text, 180, 131, 12, "#fff1c2");
       if (offscreen) {
         const left = delta < 0;
         const x = left ? 28 : 332;
         const y = 320;
-        ctx.fillStyle = "rgba(255, 232, 159, .92)";
+        ctx.fillStyle = "rgba(255,232,159,0.92)";
         ctx.beginPath();
         if (left) {
           ctx.moveTo(x - 12, y);
@@ -908,7 +1363,7 @@
       } else if (Math.abs(yDelta) > 8) {
         const x = Config.W / 2 + (delta / (Config.fov / 2)) * (Config.W / 2);
         const y = yDelta > 0 ? 168 : 486;
-        ctx.fillStyle = "rgba(255, 232, 159, .92)";
+        ctx.fillStyle = "rgba(255,232,159,0.92)";
         ctx.beginPath();
         if (yDelta > 0) {
           ctx.moveTo(x, y - 13);
@@ -925,15 +1380,70 @@
       ctx.restore();
     }
 
+    function drawSceneOverlay() {
+      const scene = State.currentScene;
+      if (!scene) return;
+      if (scene.id === "dock") drawDockOverlay(scene);
+      if (scene.id === "market" && scene.data.panel) drawMarketPanel();
+    }
+
+    function drawDockOverlay(scene) {
+      const d = scene.data;
+      if (d.phase === "fight") {
+        ctx.fillStyle = "rgba(36, 32, 28, 0.68)";
+        roundRect(32, 174, 296, 190, 16, true);
+        safeText("拉扯中", 180, 196, 15, "#fff3d3");
+        ctx.fillStyle = "#233a3d";
+        roundRect(150, 214, 60, 120, 12, true);
+        ctx.fillStyle = "#6fe190";
+        const size = 42;
+        roundRect(154, 214 + d.boxY * 84 - size / 2, 52, size, 10, true);
+        ctx.fillStyle = "#fff8d3";
+        ctx.beginPath();
+        ctx.arc(180, 214 + d.fishY * 84, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffd57a";
+        roundRect(70, 314, 220, 18, 9, true);
+        ctx.fillStyle = "#5ed286";
+        roundRect(70, 314, 220 * (d.progress / 100), 18, 9, true);
+        safeText("按住屏幕上移，松开下落", 180, 350, 12, "#ffe6b0");
+      } else if (d.phase === "search") {
+        const active = scene.objects.find(o => o.id === d.activeId);
+        const delta = active ? normDeg(active.yaw - State.look.yaw) : 0;
+        const cue = delta < -10 ? "左侧传来咕噜声" : delta > 10 ? "右侧传来咕噜声" : "正前方水花更密了";
+        ctx.fillStyle = "rgba(36,32,28,0.58)";
+        roundRect(82, 540, 196, 28, 10, true);
+        safeText(cue, 180, 554, 12, "#fff3d3");
+      }
+    }
+
+    function drawMarketPanel() {
+      ctx.fillStyle = "rgba(17, 15, 20, 0.52)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      ctx.fillStyle = "rgba(255, 242, 216, 0.96)";
+      roundRect(38, 158, 284, 230, 16, true);
+      safeText("今日订单", 86, 178, 18, "#5d4530", "left");
+      drawButton("收起", 248, 166, 58, 24);
+      for (let i = 0; i < State.save.marketOrders.length; i++) {
+        const order = State.save.marketOrders[i];
+        const y = 194 + i * 58;
+        ctx.fillStyle = order.done ? "rgba(195, 206, 184, 0.8)" : "rgba(117, 86, 63, 0.08)";
+        roundRect(52, y - 18, 256, 42, 10, true);
+        safeText(order.title, 64, y - 4, 13, "#5d4530", "left");
+        safeText(formatNeed(order.needs), 64, y + 12, 11, "#87674d", "left");
+        safeText(order.done ? "已交付" : `${order.gold}G / ${order.rep}声望`, 288, y + 4, 11, order.done ? "#7f8f74" : "#6d5138", "right");
+      }
+    }
+
     function drawParticles() {
       for (const p of State.particles) {
         const alpha = clamp(p.life / p.max, 0, 1);
         ctx.save();
         ctx.globalAlpha = alpha;
         if (p.type === "heart") {
-          safeText("♥", p.x, p.y, p.size, "#ff6f9c");
+          safeText("♥", p.x, p.y, p.size, p.color || "#ff6f9c");
         } else {
-          ctx.fillStyle = "#fff3aa";
+          ctx.fillStyle = p.color || "#fff3aa";
           ctx.beginPath();
           ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
           ctx.fill();
@@ -952,48 +1462,107 @@
       if (State.toastTimer <= 0 || !State.toast) return;
       ctx.save();
       ctx.globalAlpha = clamp(State.toastTimer, 0, 1);
-      ctx.fillStyle = "rgba(49, 32, 25, .78)";
-      roundRect(38, 82, 284, 34, 12, true);
-      safeText(State.toast, 180, 99, 13, "#fff5d2");
+      ctx.fillStyle = "rgba(49, 32, 25, 0.78)";
+      roundRect(34, 118, 292, 34, 12, true);
+      safeText(State.toast, 180, 135, 13, "#fff5d2");
       ctx.restore();
     }
 
     function drawMenu() {
-      drawBackground();
-      ctx.fillStyle = "rgba(47, 31, 23, .56)";
+      drawGradient("#7fbfd8", "#f3cf90", "#4c3b31");
+      ctx.fillStyle = "rgba(29, 23, 20, 0.52)";
       ctx.fillRect(0, 0, Config.W, Config.H);
-      safeText("晨光小鸡舍", 180, 128, 30, "#fff1c2");
-      safeText(Config.version, 180, 154, 12, "#ffd98f");
-      safeText("转动手机，喂干草、摸小鸡、捡鸡蛋", 180, 172, 14, "#ffe6b0");
-      safeText(`已照料 ${State.save.days || 0} 天 · 鸡蛋 ${State.save.eggs || 0} 个`, 180, 203, 13, "#ffd98f");
-      safeText(`完美日 ${State.save.perfectDays || 0} · 最佳 ${formatBestClear()}`, 180, 226, 12, "#ffd98f");
-      safeText(`好感：米粒 ${heartsFromFriendship(getFriendship("chickA"))}/5 · 栗栗 ${heartsFromFriendship(getFriendship("chickB"))}/5 · 小葵 ${heartsFromFriendship(getFriendship("chickC"))}/5`, 180, 250, 11, "#ffe6b0");
-      drawButton("开始照料", 86, 282, 188, 48, true);
-      drawButton("电脑测试", 104, 346, 152, 40);
-      safeText("推荐手机打开。陀螺仪和手指拖动可同时使用。", 180, 440, 12, "#ffe6b0");
-      safeText("电脑端点击“电脑测试”，用鼠标拖动模拟转手机。", 180, 462, 12, "#ffe6b0");
-      safeText("纯离线 Canvas MVP · 无外部资源", 180, 494, 12, "#d8b982");
+      safeText("穗潮湾", 180, 122, 36, "#fff2cb");
+      safeText("Tidegrain Bay", 180, 150, 14, "#ffe0a6");
+      safeText(Config.version, 180, 173, 12, "#ffdd98");
+      safeText("四个核心场景的离线 Canvas 原型集", 180, 208, 14, "#ffeac1");
+      safeText("支持手机陀螺仪，也支持电脑端拖动测试", 180, 230, 13, "#ffeac1");
+      drawButton("进入穗潮湾", 86, 290, 188, 48, true);
+      drawButton("电脑测试", 104, 350, 152, 40);
+      safeText("定点观察 + 微操作 + 场景切换 + 资源回流", 180, 446, 12, "#ffe6b0");
+      safeText("纯离线运行，无外部资源，无网络请求", 180, 470, 12, "#d9c089");
+    }
+
+    function getHubCardLayout() {
+      return { cols: 2, startX: 20, startY: 118, cardW: 152, cardH: 104, gapX: 16, gapY: 18 };
+    }
+
+    function drawHub() {
+      drawGradient("#7db6cf", "#e8cf91", "#5d4a3f");
+      ctx.fillStyle = "rgba(24, 19, 17, 0.4)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      ctx.fillStyle = "rgba(46, 34, 28, 0.72)";
+      roundRect(12, 12, 336, 90, 14, true);
+      safeText("穗潮湾场景选择", 28, 30, 15, "#fff4d6", "left");
+      safeText(`第 ${State.save.day} 天 · ${State.save.weather}`, 28, 54, 13, "#ffe5b1", "left");
+      safeText(`金币 ${State.save.gold}G`, 280, 30, 14, "#fff4d6");
+      safeText(`体力 ${State.save.stamina}/${Config.staminaMax}`, 280, 54, 12, "#ffe5b1");
+      safeText(`声望 ${State.save.rep}`, 280, 74, 12, "#ffe5b1");
+
+      const layout = getHubCardLayout();
+      SceneOrder.forEach((id, index) => {
+        const col = index % layout.cols;
+        const row = Math.floor(index / layout.cols);
+        const x = layout.startX + col * (layout.cardW + layout.gapX);
+        const y = layout.startY + row * (layout.cardH + layout.gapY);
+        const meta = SceneMeta[id];
+        const clears = State.save.sceneClears[id] || 0;
+        ctx.fillStyle = "rgba(41, 30, 24, 0.75)";
+        roundRect(x, y, layout.cardW, layout.cardH, 14, true);
+        ctx.fillStyle = meta.color;
+        roundRect(x + 8, y + 8, layout.cardW - 16, 26, 9, true);
+        safeText(meta.name, x + layout.cardW / 2, y + 21, 12, "#3f2b1c");
+        safeText(meta.en, x + layout.cardW / 2, y + 44, 10, "#ffe0ab");
+        safeText(meta.core, x + layout.cardW / 2, y + 62, 10, "#fff2d0");
+        safeText(clears ? `已完成 ${clears}` : "未试玩", x + layout.cardW / 2, y + 81, 11, clears ? "#b5f0a4" : "#e5c191");
+        safeText(State.save.sceneBest[id] ? `最佳 ${State.save.sceneBest[id]}s` : "--", x + layout.cardW / 2, y + 96, 10, "#d8be91");
+      });
+
+      ctx.fillStyle = "rgba(41, 30, 24, 0.74)";
+      roundRect(12, 456, 336, 90, 14, true);
+      safeText("背包概览", 28, 474, 14, "#fff4d6", "left");
+      safeText(formatInventorySummary(), 28, 500, 11, "#ffe5b1", "left");
+      safeText(formatInventorySummary2(), 28, 524, 11, "#ffe5b1", "left");
+
+      drawButton("睡到明天", 34, 570, 104, 40, true);
+      drawButton("返回首页", 148, 570, 92, 40);
+      drawButton(State.desktopSim ? "电脑测试中" : State.sensorMode === "gyro" ? "陀螺仪已开" : "拖动模式", 250, 570, 94, 40);
+    }
+
+    function formatInventorySummary() {
+      const inv = State.save.inventory;
+      return `鸡蛋 ${inv.egg} · 银星蛋 ${inv.silverEgg} · 鲜鱼 ${inv.fish} · 贝壳 ${inv.shell}`;
+    }
+    function formatInventorySummary2() {
+      const inv = State.save.inventory;
+      return `鲜果 ${inv.berry} · 果酱 ${inv.jam} · 蜂蜜 ${inv.honey}`;
     }
 
     function drawResult() {
-      drawBackground();
-      ctx.fillStyle = "rgba(47, 31, 23, .62)";
+      drawGradient("#7db6cf", "#f1d6a1", "#4c3b31");
+      ctx.fillStyle = "rgba(28, 22, 19, 0.52)";
       ctx.fillRect(0, 0, Config.W, Config.H);
-      ctx.fillStyle = "rgba(255, 239, 197, .94)";
-      roundRect(32, 118, 296, 330, 18, true);
-      safeText(State.resultTitle || "今日照料完成", 180, 176, 22, "#604026");
-      safeText(State.resultBody || "", 180, 218, 13, "#765238");
-      safeText(`最佳完成：${formatBestClear()} · 完美日 ${State.save.perfectDays || 0}`, 180, 242, 12, "#9a6a3c");
-      safeText(`本局好感：米粒 +${State.sessionFriendshipGain.chickA || 0} · 栗栗 +${State.sessionFriendshipGain.chickB || 0} · 小葵 +${State.sessionFriendshipGain.chickC || 0}`, 180, 266, 12, "#765238");
-      safeText(`累计：普通 ${State.save.eggQuality.normal || 0} · 银 ${State.save.eggQuality.silver || 0} · 金 ${State.save.eggQuality.gold || 0} · 稀有 ${State.save.eggQuality.rare || 0}`, 180, 296, 12, "#765238");
-      safeText(`已照料天数：${State.save.days} · 累计鸡蛋：${State.save.eggs}`, 180, 326, 12, "#765238");
-      safeText("明天也来看看它们吧", 180, 366, 14, "#9a6a3c");
-      drawButton("再照料一次", 86, 482, 188, 48, true);
-      drawButton("返回菜单", 104, 548, 152, 40);
+      ctx.fillStyle = "rgba(255, 243, 215, 0.96)";
+      roundRect(28, 112, 304, 380, 18, true);
+      safeText(State.result.title, 180, 156, 24, "#5d4330");
+      safeText(State.result.body || "", 180, 196, 13, "#7a5a3d");
+      safeText(`最佳 ${State.result.best ? `${State.result.best}s` : "--"}`, 180, 224, 12, "#a0794a");
+      const lines = State.result.rewardLines || [];
+      safeText(lines.length ? "产出 / 变化" : "本次没有新增产出", 180, 260, 14, "#7a5a3d");
+      lines.forEach((line, index) => {
+        safeText(line, 180, 290 + index * 26, 13, "#5d4330");
+      });
+      safeText(`金币 ${State.save.gold}G · 体力 ${State.save.stamina} · 声望 ${State.save.rep}`, 180, 396, 12, "#7a5a3d");
+      drawButton("重试场景", 86, 446, 188, 46, true);
+      drawButton("回到穗潮湾", 94, 510, 172, 40);
     }
 
-    function formatBestClear() {
-      return State.save.bestClear ? `${State.save.bestClear}s` : "--";
+    function drawButton(text, x, y, w, h, primary = false) {
+      ctx.fillStyle = primary ? "#f0b45e" : "rgba(255, 235, 190, 0.18)";
+      ctx.strokeStyle = primary ? "#ffe4a7" : "rgba(255, 235, 190, 0.46)";
+      ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 12, true, true);
+      safeText(text, x + w / 2, y + h / 2, primary ? 17 : 13, primary ? "#533420" : "#fff2ca");
     }
 
     function drawError(msg) {
@@ -1002,37 +1571,16 @@
       safeText(msg || Config.errorText, 180, 310, 16, "#fff5d2");
     }
 
-    function drawButton(text, x, y, w, h, primary = false) {
-      ctx.fillStyle = primary ? "#f0b45e" : "rgba(255, 235, 190, .18)";
-      ctx.strokeStyle = primary ? "#ffe4a7" : "rgba(255, 235, 190, .46)";
-      ctx.lineWidth = 2;
-      roundRect(x, y, w, h, 12, true, true);
-      safeText(text, x + w / 2, y + h / 2, primary ? 17 : 14, primary ? "#533420" : "#fff2ca");
-    }
-
-    function roundRect(x, y, w, h, r, fill, stroke) {
-      ctx.beginPath();
-      ctx.moveTo(x + r, y);
-      ctx.lineTo(x + w - r, y);
-      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-      ctx.lineTo(x + w, y + h - r);
-      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-      ctx.lineTo(x + r, y + h);
-      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-      ctx.lineTo(x, y + r);
-      ctx.quadraticCurveTo(x, y, x + r, y);
-      if (fill) ctx.fill();
-      if (stroke) ctx.stroke();
-    }
-
     function render() {
       ctx.clearRect(0, 0, Config.W, Config.H);
       if (State.screen === "menu") drawMenu();
+      else if (State.screen === "hub") drawHub();
       else if (State.screen === "playing") {
-        drawBackground();
-        drawObjects();
+        drawBackgroundForScene();
+        drawSceneObjects();
         drawParticles();
         drawHud();
+        drawSceneOverlay();
         drawToast();
       } else if (State.screen === "result") drawResult();
       else drawError();
@@ -1046,15 +1594,19 @@
         y: (t.clientY - r.top) * Config.H / r.height
       };
     }
-
     function hit(x, y, bx, by, bw, bh) {
       return x >= bx && x <= bx + bw && y >= by && y <= by + bh;
+    }
+    function isPlayingControl(x, y) {
+      return hit(x, y, 16, 584, 64, 34) || hit(x, y, 90, 584, 64, 34) || hit(x, y, 202, 584, 142, 34) || (State.currentScene && State.currentScene.id === "market" && State.currentScene.data.panel);
     }
 
     function pointerDown(e) {
       e.preventDefault();
       Audio.ensure();
       const p = getPoint(e);
+      State.press.down = true;
+      if (State.screen === "playing" && State.currentScene && State.currentScene.id === "dock" && State.currentScene.data.phase === "fight") return;
       State.drag.active = true;
       State.drag.moved = false;
       State.drag.canPan = State.screen === "playing" && !isPlayingControl(p.x, p.y);
@@ -1082,6 +1634,13 @@
       const p = getPoint(e.changedTouches ? e.changedTouches[0] : e);
       const wasDrag = State.drag.moved;
       const canPan = State.drag.canPan;
+      State.press.down = false;
+      if (State.screen === "playing" && State.currentScene && State.currentScene.id === "dock" && State.currentScene.data.phase === "fight") {
+        State.drag.active = false;
+        State.drag.moved = false;
+        State.drag.canPan = false;
+        return;
+      }
       State.drag.active = false;
       State.drag.moved = false;
       State.drag.canPan = false;
@@ -1089,26 +1648,61 @@
       handleTap(p.x, p.y);
     }
 
-    function isPlayingControl(x, y) {
-      return hit(x, y, 16, 584, 64, 34) || hit(x, y, 90, 584, 64, 34);
-    }
-
     function handleTap(x, y) {
       if (State.screen === "menu") {
-        if (hit(x, y, 86, 282, 188, 48)) requestMotionAndStart();
-        else if (hit(x, y, 104, 346, 152, 40)) {
-          State.sensorMode = "drag";
-          State.sensorReady = false;
-          State.desktopSim = true;
-          startGame();
+        if (hit(x, y, 86, 290, 188, 48)) requestMotionAndOpenHub();
+        else if (hit(x, y, 104, 350, 152, 40)) openHubDesktop();
+        return;
+      }
+
+      if (State.screen === "hub") {
+        if (hit(x, y, 34, 570, 104, 40)) {
+          advanceDay();
+          saveGame();
+          return;
         }
-      } else if (State.screen === "playing") {
-        if (hit(x, y, 16, 584, 64, 34)) calibrate();
-        else if (hit(x, y, 90, 584, 64, 34)) endGame(false);
-        else interact();
-      } else if (State.screen === "result") {
-        if (hit(x, y, 86, 482, 188, 48)) startGame();
-        else if (hit(x, y, 104, 548, 152, 40)) State.screen = "menu";
+        if (hit(x, y, 148, 570, 92, 40)) {
+          State.screen = "menu";
+          return;
+        }
+        const layout = getHubCardLayout();
+        for (let i = 0; i < SceneOrder.length; i++) {
+          const col = i % layout.cols;
+          const row = Math.floor(i / layout.cols);
+          const bx = layout.startX + col * (layout.cardW + layout.gapX);
+          const by = layout.startY + row * (layout.cardH + layout.gapY);
+          if (hit(x, y, bx, by, layout.cardW, layout.cardH)) {
+            enterScene(SceneOrder[i]);
+            return;
+          }
+        }
+        return;
+      }
+
+      if (State.screen === "playing") {
+        if (hit(x, y, 16, 584, 64, 34)) {
+          leaveScene();
+          return;
+        }
+        if (hit(x, y, 90, 584, 64, 34)) {
+          calibrate();
+          return;
+        }
+        if (handleSceneOverlayTap(x, y)) return;
+        interactSceneObject(findHover());
+        return;
+      }
+
+      if (State.screen === "result") {
+        if (hit(x, y, 86, 446, 188, 46) && State.result) {
+          enterScene(State.result.id);
+          return;
+        }
+        if (hit(x, y, 94, 510, 172, 40)) {
+          State.currentScene = null;
+          State.result = null;
+          State.screen = "hub";
+        }
       }
     }
 
@@ -1128,13 +1722,12 @@
     function init() {
       try {
         loadSave();
-        resetObjects();
         window.addEventListener("deviceorientation", onOrientation, true);
         canvas.addEventListener("pointerdown", pointerDown, { passive: false });
         canvas.addEventListener("pointermove", pointerMove, { passive: false });
         canvas.addEventListener("pointerup", pointerUp, { passive: false });
         canvas.addEventListener("pointercancel", pointerUp, { passive: false });
-        document.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
+        document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
         requestAnimationFrame(loop);
       } catch (err) {
         console.error(err);
