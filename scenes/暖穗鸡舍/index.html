@@ -1,0 +1,1149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>晨光小鸡舍</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #2e241d;
+      color: #fff7df;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      touch-action: none;
+      user-select: none;
+    }
+    #wrap {
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 50% 15%, rgba(255, 230, 162, .2), transparent 35%),
+        linear-gradient(180deg, #3b2c23, #1d1715);
+    }
+    canvas {
+      display: block;
+      width: min(100vw, calc(100vh * 9 / 16));
+      height: min(100vh, calc(100vw * 16 / 9));
+      max-width: 100vw;
+      max-height: 100vh;
+      background: #f5d08f;
+      border-radius: 14px;
+      box-shadow: 0 22px 70px rgba(0, 0, 0, .45);
+      touch-action: none;
+    }
+    @media (max-width: 520px) {
+      canvas { border-radius: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="gameCanvas" width="360" height="640" aria-label="晨光小鸡舍游戏画面"></canvas>
+  </div>
+
+  <script>
+  (() => {
+    "use strict";
+
+    const Config = {
+      version: "v1.0",
+      W: 360,
+      H: 640,
+      fov: 96,
+      pitchScale: 5.2,
+      yawSmoothing: 0.18,
+      pitchSmoothing: 0.18,
+      gameSeconds: 90,
+      errorText: "哎呀，出错了，请重启试试吧~",
+      tasks: { hay: 3, pets: 3, eggs: 2 },
+      storageKey: "morning-coop-save-v1"
+    };
+
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const State = {
+      screen: "menu",
+      sensorMode: "drag",
+      desktopSim: false,
+      sensorReady: false,
+      permissionAsked: false,
+      needsCalibration: false,
+      holding: null,
+      hayLeft: 3,
+      feedPlaced: 0,
+      eggsCollected: 0,
+      petsDone: 0,
+      timeLeft: Config.gameSeconds,
+      lastTime: 0,
+      hoverId: null,
+      lastFedId: null,
+      toast: "",
+      toastTimer: 0,
+      resultTitle: "",
+      resultBody: "",
+      resultGrade: "",
+      clearTime: 0,
+      collectedEggs: [],
+      sessionFriendshipGain: {},
+      milestones: {},
+      ended: false,
+      drag: { active: false, moved: false, canPan: false, x: 0, y: 0, yaw: 0, pitch: 0 },
+      orientation: { alpha: 0, beta: 0, gamma: 0, has: false },
+      calibration: { alpha: 0, beta: 70 },
+      targetLook: { yaw: 0, pitch: 0 },
+      look: { yaw: 0, pitch: 0 },
+      particles: [],
+      floaters: [],
+      save: { days: 0, eggs: 0, bestClear: 0, perfectDays: 0, friendship: {}, eggQuality: { normal: 0, silver: 0, gold: 0, rare: 0 } },
+      objects: []
+    };
+
+    const Audio = {
+      ctx: null,
+      ensure() {
+        if (!this.ctx) {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (AC) this.ctx = new AC();
+        }
+        if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+      },
+      beep(type) {
+        try {
+          this.ensure();
+          if (!this.ctx) return;
+          const now = this.ctx.currentTime;
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          const map = {
+            hay: [360, 0.07, "triangle"],
+            place: [260, 0.09, "sine"],
+            pet: [620, 0.12, "sine"],
+            egg: [780, 0.08, "triangle"],
+            miss: [150, 0.04, "sawtooth"],
+            win: [520, 0.22, "sine"]
+          };
+          const [freq, dur, wave] = map[type] || map.miss;
+          osc.type = wave;
+          osc.frequency.setValueAtTime(freq, now);
+          if (type === "win") osc.frequency.exponentialRampToValueAtTime(880, now + dur);
+          gain.gain.setValueAtTime(0.0001, now);
+          gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+          osc.connect(gain);
+          gain.connect(this.ctx.destination);
+          osc.start(now);
+          osc.stop(now + dur + 0.02);
+        } catch (_) {}
+      }
+    };
+
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function normDeg(v) {
+      let n = ((v + 180) % 360 + 360) % 360 - 180;
+      return n === -180 ? 180 : n;
+    }
+    function angleDistance(a, b) { return Math.abs(normDeg(a - b)); }
+    function vibrate(pattern) {
+      try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (_) {}
+    }
+    function safeText(text, x, y, size = 16, color = "#fff7df", align = "center") {
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.font = `700 ${size}px system-ui, sans-serif`;
+      ctx.textAlign = align;
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, x, y);
+      ctx.restore();
+    }
+
+    function loadSave() {
+      try {
+        const raw = localStorage.getItem(Config.storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          State.save = Object.assign(State.save, parsed);
+          State.save.bestClear = parsed.bestClear || 0;
+          State.save.perfectDays = parsed.perfectDays || 0;
+          State.save.friendship = Object.assign({}, State.save.friendship || {}, parsed.friendship || {});
+          State.save.eggQuality = Object.assign({ normal: 0, silver: 0, gold: 0, rare: 0 }, parsed.eggQuality || {});
+        }
+      } catch (_) {}
+    }
+    function saveGame() {
+      try { localStorage.setItem(Config.storageKey, JSON.stringify(State.save)); } catch (_) {}
+    }
+
+    function getFriendship(id) {
+      return clamp(State.save.friendship[id] || 0, 0, 1000);
+    }
+
+    function heartsFromFriendship(value) {
+      return clamp(Math.floor(value / 200), 0, 5);
+    }
+
+    function getEggQuality() {
+      const ids = ["chickA", "chickB", "chickC"];
+      const avg = ids.reduce((sum, id) => sum + getFriendship(id), 0) / ids.length;
+      if (avg >= 900) return { key: "rare", label: "稀有蛋", color: "#d8b4ff", sparkle: "#f3ddff" };
+      if (avg >= 600) return { key: "gold", label: "金星蛋", color: "#ffe07a", sparkle: "#fff3a8" };
+      if (avg >= 200) return { key: "silver", label: "银星蛋", color: "#e7edf4", sparkle: "#ffffff" };
+      return { key: "normal", label: "普通蛋", color: "#fff4d2", sparkle: "#ffffff" };
+    }
+
+    function resetObjects() {
+      State.objects = [
+        { id: "hopper", type: "hopper", label: "干草料斗", action: "拿干草", yaw: -58, pitch: -4, angle: 13, state: "ready" },
+        { id: "trough1", type: "trough", label: "食槽 1", action: "放干草", yaw: 4, pitch: -18, angle: 13, state: "empty" },
+        { id: "trough2", type: "trough", label: "食槽 2", action: "放干草", yaw: 24, pitch: -18, angle: 13, state: "empty" },
+        { id: "trough3", type: "trough", label: "食槽 3", action: "放干草", yaw: 44, pitch: -18, angle: 13, state: "empty" },
+        { id: "chickA", type: "chicken", label: "米粒", action: "摸摸", yaw: -24, baseYaw: -24, pitch: -24, angle: 17, state: "idle", color: "#fff6d7", pet: false, bob: 0, wander: 0 },
+        { id: "chickB", type: "chicken", label: "栗栗", action: "摸摸", yaw: 64, baseYaw: 64, pitch: -22, angle: 17, state: "idle", color: "#c98242", pet: false, bob: 1.7, wander: 1.2 },
+        { id: "chickC", type: "chicken", label: "小葵", action: "摸摸", yaw: -84, baseYaw: -84, pitch: -25, angle: 17, state: "idle", color: "#ffd85e", pet: false, bob: 3.1, wander: 2.4 },
+        { id: "egg1", type: "egg", label: getEggQuality().label, action: "拾取", yaw: -42, pitch: -36, angle: 15, state: "onGround", quality: getEggQuality() },
+        { id: "egg2", type: "egg", label: getEggQuality().label, action: "拾取", yaw: 88, pitch: -35, angle: 15, state: "onGround", quality: getEggQuality() }
+      ];
+    }
+
+    function startGame() {
+      Audio.ensure();
+      calibrate();
+      resetObjects();
+      State.screen = "playing";
+      State.needsCalibration = State.sensorMode === "gyro";
+      State.holding = null;
+      State.hayLeft = Config.tasks.hay;
+      State.feedPlaced = 0;
+      State.lastFedId = null;
+      State.eggsCollected = 0;
+      State.petsDone = 0;
+      State.timeLeft = Config.gameSeconds;
+      State.resultTitle = "";
+      State.resultBody = "";
+      State.resultGrade = "";
+      State.clearTime = 0;
+      State.collectedEggs = [];
+      State.sessionFriendshipGain = {};
+      State.milestones = {};
+      State.ended = false;
+      State.toast = "转动手机，也可按住画面拖动视角";
+      State.toastTimer = 2.2;
+      State.particles.length = 0;
+      State.floaters.length = 0;
+    }
+
+    async function requestMotionAndStart() {
+      try {
+        Audio.ensure();
+        State.permissionAsked = true;
+        const DOE = window.DeviceOrientationEvent;
+        if (DOE && typeof DOE.requestPermission === "function") {
+          const res = await DOE.requestPermission();
+          if (res === "granted") {
+            State.sensorMode = "gyro";
+            State.sensorReady = true;
+          } else {
+            State.sensorMode = "drag";
+            State.toast = "已切换为拖动视角";
+            State.toastTimer = 2;
+          }
+        } else if (DOE) {
+          State.sensorMode = "gyro";
+          State.sensorReady = true;
+        } else {
+          State.sensorMode = "drag";
+          State.desktopSim = true;
+        }
+        startGame();
+      } catch (_) {
+        State.sensorMode = "drag";
+        State.desktopSim = true;
+        startGame();
+      }
+    }
+
+    function calibrate() {
+      State.calibration.alpha = State.orientation.has ? State.orientation.alpha : 0;
+      State.calibration.beta = State.orientation.has ? State.orientation.beta : 70;
+      State.drag.yaw = 0;
+      State.drag.pitch = 0;
+      State.targetLook.yaw = 0;
+      State.targetLook.pitch = 0;
+      State.look.yaw = 0;
+      State.look.pitch = 0;
+      State.toast = "已重新居中";
+      State.toastTimer = 1.2;
+    }
+
+    function endGame(auto) {
+      if (State.ended) return;
+      State.ended = true;
+      const completed = State.feedPlaced + State.petsDone + State.eggsCollected;
+      const perfect = completed >= 8;
+      State.clearTime = Math.max(0, Math.round(Config.gameSeconds - State.timeLeft));
+      State.resultGrade = getResultGrade(completed, State.timeLeft);
+      State.screen = "result";
+      State.save.days += 1;
+      State.save.eggs += State.eggsCollected;
+      if (perfect) {
+        State.save.perfectDays = (State.save.perfectDays || 0) + 1;
+        if (!State.save.bestClear || State.clearTime < State.save.bestClear) State.save.bestClear = State.clearTime;
+      }
+      for (const egg of State.collectedEggs) {
+        State.save.eggQuality[egg.key] = (State.save.eggQuality[egg.key] || 0) + 1;
+      }
+      for (const o of State.objects) {
+        let gain = 0;
+        if (o.type === "chicken" && o.pet) {
+          gain += 15;
+        }
+        if (o.type === "chicken" && State.feedPlaced >= Config.tasks.hay) {
+          gain += 8;
+        }
+        if (o.type === "chicken" && completed >= 8) {
+          gain += 5;
+        }
+        if (o.type === "chicken" && gain > 0) {
+          State.save.friendship[o.id] = clamp((State.save.friendship[o.id] || 0) + gain, 0, 1000);
+          State.sessionFriendshipGain[o.id] = gain;
+        }
+      }
+      saveGame();
+      if (perfect) {
+        State.resultTitle = "今天的小鸡都吃饱啦";
+        State.resultBody = `评分 ${State.resultGrade} · 用时 ${State.clearTime}s · 鸡蛋 ${formatEggSummary()}`;
+        Audio.beep("win");
+      } else if (auto) {
+        State.resultTitle = "还有小鸡在等你";
+        State.resultBody = `评分 ${State.resultGrade} · 完成度 ${completed}/8 · 鸡蛋 ${formatEggSummary()}`;
+      } else {
+        State.resultTitle = "今日照料暂停";
+        State.resultBody = `评分 ${State.resultGrade} · 完成度 ${completed}/8 · 鸡蛋 ${formatEggSummary()}`;
+      }
+    }
+
+    function getResultGrade(completed, timeLeft) {
+      if (completed >= 8 && timeLeft >= 35) return "S";
+      if (completed >= 8) return "A";
+      if (completed >= 6) return "B";
+      if (completed >= 3) return "C";
+      return "D";
+    }
+
+    function formatEggSummary() {
+      if (!State.collectedEggs.length) return "0/2";
+      const counts = {};
+      for (const egg of State.collectedEggs) counts[egg.label] = (counts[egg.label] || 0) + 1;
+      return Object.entries(counts).map(([label, count]) => `${label}x${count}`).join("、");
+    }
+
+    function onOrientation(e) {
+      State.orientation.alpha = e.alpha || 0;
+      State.orientation.beta = e.beta || 0;
+      State.orientation.gamma = e.gamma || 0;
+      State.orientation.has = true;
+      if (State.sensorReady) State.sensorMode = "gyro";
+      if (State.needsCalibration && State.screen === "playing") {
+        State.calibration.alpha = State.orientation.alpha;
+        State.calibration.beta = State.orientation.beta;
+        State.needsCalibration = false;
+      }
+    }
+
+    function updateLook() {
+      if (State.sensorMode === "gyro" && State.orientation.has && !State.desktopSim) {
+        State.targetLook.yaw = normDeg(State.orientation.alpha - State.calibration.alpha + State.drag.yaw);
+        State.targetLook.pitch = clamp((State.orientation.beta - State.calibration.beta) * 0.7 + State.drag.pitch, -32, 32);
+      } else {
+        State.targetLook.yaw = normDeg(State.drag.yaw);
+        State.targetLook.pitch = clamp(State.drag.pitch, -32, 32);
+      }
+      State.look.yaw = normDeg(State.look.yaw + normDeg(State.targetLook.yaw - State.look.yaw) * Config.yawSmoothing);
+      State.look.pitch += (State.targetLook.pitch - State.look.pitch) * Config.pitchSmoothing;
+    }
+
+    function project(obj) {
+      const dx = normDeg(obj.yaw - State.look.yaw);
+      if (Math.abs(dx) > Config.fov / 2 + 20) return null;
+      const x = Config.W / 2 + (dx / (Config.fov / 2)) * (Config.W / 2);
+      const y = 330 - (obj.pitch - State.look.pitch) * Config.pitchScale;
+      const scale = clamp(1 - Math.abs(dx) / 130, 0.55, 1.15);
+      return { x, y, scale, dx };
+    }
+
+    function findHover() {
+      let best = null;
+      let bestScore = Infinity;
+      for (const obj of State.objects) {
+        if ((obj.type === "egg" && obj.state === "collected") || (obj.type === "trough" && obj.state === "filled")) continue;
+        const dy = Math.abs(obj.pitch - State.look.pitch);
+        const dist = Math.hypot(angleDistance(obj.yaw, State.look.yaw), dy * 1.4);
+        if (dist < obj.angle && dist < bestScore) {
+          best = obj;
+          bestScore = dist;
+        }
+      }
+      State.hoverId = best ? best.id : null;
+      return best;
+    }
+
+    function getNextObjective() {
+      if (State.holding !== "hay" && State.feedPlaced < Config.tasks.hay && State.hayLeft > 0) {
+        const hopper = State.objects.find(o => o.type === "hopper");
+        return hopper ? { obj: hopper, text: "先看向料斗，拿一束干草" } : null;
+      }
+      if (State.holding === "hay") {
+        const trough = State.objects.find(o => o.type === "trough" && o.state === "empty");
+        return trough ? { obj: trough, text: "看向空食槽，把干草放好" } : null;
+      }
+      const chicken = State.objects.find(o => o.type === "chicken" && !o.pet);
+      if (chicken) return { obj: chicken, text: `找到 ${chicken.label}，轻轻摸摸它` };
+      const egg = State.objects.find(o => o.type === "egg" && o.state !== "collected");
+      if (egg) return { obj: egg, text: "地上还有鸡蛋可以拾取" };
+      return null;
+    }
+
+    function interact() {
+      if (State.screen !== "playing") return;
+      const obj = findHover();
+      if (!obj) {
+        State.toast = "再靠近一点点";
+        State.toastTimer = 0.8;
+        Audio.beep("miss");
+        return;
+      }
+      if (obj.type === "hopper") {
+        if (State.holding === "hay") {
+          State.toast = "手里已经有干草了";
+          State.toastTimer = 1;
+          return;
+        }
+        if (State.hayLeft <= 0) {
+          State.toast = "干草拿完啦";
+          State.toastTimer = 1;
+          return;
+        }
+        State.hayLeft -= 1;
+        State.holding = "hay";
+        addFloater("手持干草", Config.W - 82, Config.H - 92, "#ffe9a8");
+        Audio.beep("hay");
+        vibrate(25);
+      } else if (obj.type === "trough") {
+        if (State.holding !== "hay") {
+          State.toast = "先去料斗拿干草";
+          State.toastTimer = 1.2;
+          Audio.beep("miss");
+          return;
+        }
+        obj.state = "filled";
+        obj.filledAt = performance.now();
+        State.holding = null;
+        State.feedPlaced += 1;
+        State.lastFedId = obj.id;
+        State.toast = "干草放好啦";
+        State.toastTimer = 1;
+        Audio.beep("place");
+        vibrate(35);
+        nudgeChickenToEat();
+        const p = project(obj) || { x: Config.W / 2, y: Config.H / 2 };
+        sparkle(p.x, p.y - 8);
+        checkMilestones();
+      } else if (obj.type === "chicken") {
+        if (!obj.pet) {
+          obj.pet = true;
+          obj.state = "happy";
+          obj.happyTimer = 4.5;
+          State.petsDone += 1;
+          checkMilestones();
+          const p = project(obj) || { x: Config.W / 2, y: Config.H / 2 };
+          burstHearts(p.x, p.y - 36, obj.color);
+          addFloater("+好感", p.x, p.y - 64, "#ff7aa8");
+          Audio.beep("pet");
+          vibrate([20, 20, 30]);
+        } else {
+          State.toast = `${obj.label} 已经被摸摸过啦`;
+          State.toastTimer = 1.1;
+          Audio.beep("hay");
+        }
+      } else if (obj.type === "egg") {
+        obj.state = "collected";
+        State.eggsCollected += 1;
+        State.collectedEggs.push(obj.quality);
+        checkMilestones();
+        const p = project(obj) || { x: Config.W / 2, y: Config.H / 2 };
+        addFloater(`+1 ${obj.quality.label}`, p.x, p.y - 28, obj.quality.sparkle);
+        sparkle(p.x, p.y);
+        Audio.beep("egg");
+        vibrate(25);
+      }
+      if (State.feedPlaced >= 3 && State.petsDone >= 3 && State.eggsCollected >= 2) {
+        setTimeout(() => endGame(false), 550);
+      }
+    }
+
+    function checkMilestones() {
+      const marks = [
+        ["fed", State.feedPlaced >= Config.tasks.hay, "三格食槽都放好啦"],
+        ["pet", State.petsDone >= Config.tasks.pets, "三只小鸡都开心啦"],
+        ["egg", State.eggsCollected >= Config.tasks.eggs, "今天的鸡蛋收齐啦"]
+      ];
+      for (const [key, done, text] of marks) {
+        if (done && !State.milestones[key]) {
+          State.milestones[key] = true;
+          State.toast = text;
+          State.toastTimer = 1.6;
+          sparkle(Config.W / 2, 210);
+          return;
+        }
+      }
+    }
+
+    function nudgeChickenToEat() {
+      const hungry = State.objects
+        .filter(o => o.type === "chicken" && o.state !== "happy")
+        .sort((a, b) => Math.abs(normDeg(a.yaw - State.look.yaw)) - Math.abs(normDeg(b.yaw - State.look.yaw)));
+      const chick = hungry[0];
+      if (chick) {
+        chick.state = "eat";
+        chick.eatTimer = 3.8;
+        State.toast = `${chick.label} 听见干草声，跑去吃饭啦`;
+        State.toastTimer = 1.8;
+      }
+    }
+
+    function burstHearts(x, y) {
+      for (let i = 0; i < 10; i++) {
+        State.particles.push({
+          type: "heart",
+          x, y,
+          vx: (Math.random() - 0.5) * 55,
+          vy: -40 - Math.random() * 45,
+          life: 0.85 + Math.random() * 0.35,
+          max: 1.2,
+          size: 8 + Math.random() * 7
+        });
+      }
+    }
+    function sparkle(x, y) {
+      for (let i = 0; i < 12; i++) {
+        State.particles.push({
+          type: "spark",
+          x, y,
+          vx: (Math.random() - 0.5) * 85,
+          vy: (Math.random() - 0.7) * 80,
+          life: 0.55,
+          max: 0.55,
+          size: 3 + Math.random() * 4
+        });
+      }
+    }
+    function addFloater(text, x, y, color) {
+      State.floaters.push({ text, x, y, color, life: 1.1, max: 1.1 });
+    }
+
+    function update(dt) {
+      updateLook();
+      if (State.screen === "playing") {
+        State.timeLeft -= dt;
+        if (State.timeLeft <= 0) {
+          State.timeLeft = 0;
+          endGame(true);
+        }
+        for (const o of State.objects) {
+          if (o.type === "chicken") {
+            o.bob += dt * 3;
+            o.wander += dt;
+            if (o.state === "eat") {
+              o.eatTimer = Math.max(0, (o.eatTimer || 0) - dt);
+              o.yaw += Math.sin(performance.now() * 0.001 + o.bob) * dt * 4;
+              if (o.eatTimer <= 0) o.state = o.pet ? "happy" : "idle";
+            } else if (o.state === "happy") {
+              o.happyTimer = Math.max(0, (o.happyTimer || 0) - dt);
+              o.yaw = normDeg(o.baseYaw + Math.sin(o.wander * 1.8) * 2.5);
+              if (o.happyTimer <= 0) o.state = "idle";
+            } else {
+              o.yaw = normDeg(o.baseYaw + Math.sin(o.wander * 0.65) * 5);
+            }
+            if (o.state === "happy" && Math.random() < dt * 0.55) {
+              const p = project(o);
+              if (p) burstHearts(p.x, p.y - 35);
+            }
+          }
+        }
+        findHover();
+      }
+      for (let i = State.particles.length - 1; i >= 0; i--) {
+        const p = State.particles[i];
+        p.life -= dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 45 * dt;
+        if (p.life <= 0) State.particles.splice(i, 1);
+      }
+      for (let i = State.floaters.length - 1; i >= 0; i--) {
+        const f = State.floaters[i];
+        f.life -= dt;
+        f.y -= 24 * dt;
+        if (f.life <= 0) State.floaters.splice(i, 1);
+      }
+      if (State.toastTimer > 0) State.toastTimer -= dt;
+    }
+
+    function drawBackground() {
+      const w = Config.W, h = Config.H;
+      const grd = ctx.createLinearGradient(0, 0, 0, h);
+      grd.addColorStop(0, "#f9d58c");
+      grd.addColorStop(0.38, "#f5bf72");
+      grd.addColorStop(0.39, "#8b5b35");
+      grd.addColorStop(1, "#5a3828");
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, w, h);
+
+      const sunX = w * 0.5 - normDeg(State.look.yaw) * 1.2;
+      ctx.save();
+      ctx.globalAlpha = 0.28;
+      ctx.fillStyle = "#fff0b7";
+      ctx.beginPath();
+      ctx.moveTo(sunX - 36, 120);
+      ctx.lineTo(sunX + 46, 120);
+      ctx.lineTo(sunX + 180, h);
+      ctx.lineTo(sunX - 160, h);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      drawWindow(180 - normDeg(State.look.yaw - 4) * 1.1, 106);
+      drawWallProp(-110, "草捆");
+      drawWallProp(118, "木桶");
+
+      ctx.fillStyle = "#70462e";
+      ctx.fillRect(0, 385, w, h - 385);
+      for (let y = 398; y < h; y += 34) {
+        ctx.strokeStyle = "rgba(55, 32, 22, .32)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y + Math.sin(y) * 8);
+        ctx.stroke();
+      }
+      for (let x = -50; x < w + 80; x += 58) {
+        ctx.strokeStyle = "rgba(255, 222, 160, .08)";
+        ctx.beginPath();
+        ctx.moveTo(x - State.look.yaw * 0.25, 390);
+        ctx.lineTo(x + 28 - State.look.yaw * 0.4, h);
+        ctx.stroke();
+      }
+    }
+
+    function drawWindow(x, y) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.fillStyle = "#7b4a2b";
+      roundRect(-46, -34, 92, 68, 8, true);
+      ctx.fillStyle = "#ffe2a0";
+      roundRect(-34, -24, 68, 48, 4, true);
+      ctx.strokeStyle = "#9b6337";
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(0, -24); ctx.lineTo(0, 24);
+      ctx.moveTo(-34, 0); ctx.lineTo(34, 0);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawWallProp(yaw, label) {
+      const dx = normDeg(yaw - State.look.yaw);
+      if (Math.abs(dx) > 90) return;
+      const x = Config.W / 2 + dx * 2.0;
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = label === "草捆" ? "#c39142" : "#6f3f27";
+      roundRect(x - 26, 292, 52, 44, 10, true);
+      ctx.restore();
+    }
+
+    function drawObjects() {
+      const ordered = State.objects.map(o => ({ o, p: project(o) })).filter(v => v.p);
+      ordered.sort((a, b) => a.p.y - b.p.y);
+      for (const { o, p } of ordered) {
+        const hover = State.hoverId === o.id;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.scale(p.scale, p.scale);
+        if (hover) drawGlow(o);
+        if (o.type === "hopper") drawHopper(o);
+        if (o.type === "trough") drawTrough(o);
+        if (o.type === "chicken") drawChicken(o);
+        if (o.type === "egg") drawEgg(o);
+        if (hover) drawObjectLabel(o);
+        ctx.restore();
+      }
+    }
+
+    function drawGlow(o) {
+      ctx.save();
+      ctx.globalAlpha = 0.5 + Math.sin(performance.now() * 0.008) * 0.15;
+      ctx.fillStyle = "#fff2a6";
+      const r = o.type === "chicken" ? 34 : 28;
+      ctx.beginPath();
+      ctx.ellipse(0, 2, r, r * 0.75, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawHopper() {
+      ctx.fillStyle = "#6d4328";
+      roundRect(-28, -24, 56, 48, 7, true);
+      ctx.fillStyle = "#c7903e";
+      for (let i = -20; i <= 18; i += 8) {
+        ctx.beginPath();
+        ctx.moveTo(i, -22);
+        ctx.lineTo(i + 10, -40);
+        ctx.lineTo(i + 20, -22);
+        ctx.fill();
+      }
+      ctx.fillStyle = "#4b2d1e";
+      ctx.fillRect(-22, -2, 44, 8);
+    }
+
+    function drawTrough(o) {
+      ctx.fillStyle = "#75462b";
+      roundRect(-33, -12, 66, 24, 7, true);
+      ctx.fillStyle = "#4d2d1f";
+      roundRect(-27, -7, 54, 12, 5, true);
+      if (o.state === "filled") {
+        ctx.fillStyle = "#d8ad55";
+        for (let i = -22; i <= 18; i += 8) {
+          ctx.beginPath();
+          ctx.moveTo(i, -6);
+          ctx.lineTo(i + 9, -21);
+          ctx.lineTo(i + 17, -6);
+          ctx.fill();
+        }
+        if (State.lastFedId === o.id && performance.now() - (o.filledAt || 0) < 1200) {
+          ctx.save();
+          ctx.globalAlpha = 0.45 + Math.sin(performance.now() * 0.02) * 0.15;
+          ctx.strokeStyle = "#fff0a7";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.ellipse(0, -5, 40, 22, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
+
+    function drawChicken(o) {
+      const hop = Math.sin(o.bob) * (o.state === "happy" ? 4 : 1.5);
+      ctx.translate(0, hop);
+      ctx.fillStyle = "rgba(55, 25, 15, .18)";
+      ctx.beginPath();
+      ctx.ellipse(0, 24, 28, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = o.color;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 22, 24, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(10, -23, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#ee5b45";
+      ctx.beginPath();
+      ctx.moveTo(6, -39); ctx.lineTo(12, -49); ctx.lineTo(18, -39);
+      ctx.fill();
+      ctx.fillStyle = "#ec9b24";
+      ctx.beginPath();
+      ctx.moveTo(23, -22); ctx.lineTo(35, -17); ctx.lineTo(23, -12);
+      ctx.fill();
+      ctx.fillStyle = "#34241e";
+      ctx.beginPath();
+      ctx.arc(13, -25, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#c87930";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(-8, 21); ctx.lineTo(-12, 31);
+      ctx.moveTo(8, 21); ctx.lineTo(12, 31);
+      ctx.stroke();
+      if (o.pet) {
+        safeText("♥", -20, -38, 18, "#ff6f9c");
+      }
+      const friendship = getFriendship(o.id);
+      const heartCount = heartsFromFriendship(friendship);
+      if (heartCount > 0) {
+        safeText("♥".repeat(heartCount), 0, 39, 10, "#ff7aa8");
+      }
+      if (o.state === "eat") {
+        ctx.fillStyle = "rgba(255, 236, 164, .92)";
+        roundRect(-30, -61, 60, 21, 8, true);
+        safeText("吃饭中", 0, -50, 11, "#6b4328");
+      }
+    }
+
+    function drawEgg(o) {
+      ctx.fillStyle = "rgba(55, 25, 15, .18)";
+      ctx.beginPath();
+      ctx.ellipse(0, 17, 17, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = o.quality ? o.quality.color : "#fff4d2";
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 13, 18, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,.55)";
+      ctx.beginPath();
+      ctx.ellipse(-4, -6, 4, 7, -0.6, 0, Math.PI * 2);
+      ctx.fill();
+      if (o.quality && o.quality.key !== "normal") {
+        safeText("✦", 0, -24, 13, o.quality.sparkle);
+      }
+    }
+
+    function drawObjectLabel(o) {
+      ctx.fillStyle = "rgba(55, 34, 25, .76)";
+      const isChicken = o.type === "chicken";
+      roundRect(isChicken ? -56 : -42, -58, isChicken ? 112 : 84, isChicken ? 36 : 22, 8, true);
+      safeText(o.action, 0, isChicken ? -49 : -47, 12, "#fff5d2");
+      if (isChicken) {
+        const friendship = getFriendship(o.id);
+        safeText(`${o.label} ${heartsFromFriendship(friendship)}/5心`, 0, -33, 10, "#ffe4a8");
+      }
+    }
+
+    function drawHud() {
+      ctx.fillStyle = "rgba(64, 39, 27, .72)";
+      roundRect(10, 10, 340, 58, 12, true);
+      safeText(`干草 ${State.feedPlaced}/3`, 28, 28, 13, "#fff5d2", "left");
+      safeText(`摸摸 ${State.petsDone}/3`, 28, 51, 13, "#fff5d2", "left");
+      safeText(`鸡蛋 ${State.eggsCollected}/2`, 138, 51, 13, "#fff5d2", "left");
+      safeText(`${Math.ceil(State.timeLeft)}s`, 318, 29, 18, State.timeLeft <= 10 ? "#ffb6a1" : "#fff5d2");
+      safeText(Config.version, 316, 53, 11, "#d8b982");
+      drawFeedingPanel();
+      if (State.holding === "hay") {
+        ctx.fillStyle = "rgba(255, 232, 159, .92)";
+        roundRect(250, 575, 92, 38, 12, true);
+        safeText("手持干草", 296, 594, 13, "#6b4328");
+      }
+      const mode = State.sensorMode === "gyro" ? "陀螺仪+拖动" : "拖动";
+      safeText(State.desktopSim ? "电脑测试" : mode, 181, 29, 12, "#ffe6a8");
+
+      ctx.save();
+      ctx.translate(Config.W / 2, Config.H / 2);
+      ctx.strokeStyle = State.hoverId ? "#fff1a2" : "rgba(255,255,255,.72)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 9, 0, Math.PI * 2);
+      ctx.moveTo(-16, 0); ctx.lineTo(-7, 0);
+      ctx.moveTo(7, 0); ctx.lineTo(16, 0);
+      ctx.moveTo(0, -16); ctx.lineTo(0, -7);
+      ctx.moveTo(0, 7); ctx.lineTo(0, 16);
+      ctx.stroke();
+      ctx.restore();
+
+      const hover = State.objects.find(o => o.id === State.hoverId);
+      if (hover) {
+        ctx.fillStyle = "rgba(64, 39, 27, .72)";
+        roundRect(101, 352, 158, 34, 12, true);
+        safeText(`${hover.label} · ${hover.action}`, 180, 369, 14, "#fff5d2");
+      }
+
+      drawObjectiveGuide();
+
+      drawButton("居中", 16, 584, 64, 34);
+      drawButton("结束", 90, 584, 64, 34);
+    }
+
+    function drawFeedingPanel() {
+      ctx.save();
+      ctx.fillStyle = "rgba(64, 39, 27, .58)";
+      roundRect(186, 74, 156, 31, 10, true);
+      safeText(`料斗 ${State.hayLeft}`, 213, 89, 12, "#fff1c2");
+      for (let i = 0; i < 3; i++) {
+        const filled = i < State.feedPlaced;
+        ctx.fillStyle = filled ? "#d8ad55" : "rgba(255, 235, 190, .22)";
+        roundRect(254 + i * 24, 81, 17, 16, 5, true);
+        if (filled) {
+          ctx.fillStyle = "#fff0a7";
+          ctx.fillRect(258 + i * 24, 86, 9, 3);
+        }
+      }
+      ctx.restore();
+    }
+
+    function drawObjectiveGuide() {
+      const next = getNextObjective();
+      if (!next || State.hoverId === next.obj.id) return;
+      const obj = next.obj;
+      const delta = normDeg(obj.yaw - State.look.yaw);
+      const offscreen = Math.abs(delta) > Config.fov / 2 - 8;
+      const yDelta = obj.pitch - State.look.pitch;
+
+      ctx.save();
+      ctx.fillStyle = "rgba(64, 39, 27, .68)";
+      roundRect(38, 112, 284, 30, 11, true);
+      safeText(next.text, 180, 127, 12, "#fff1c2");
+
+      if (offscreen) {
+        const left = delta < 0;
+        const x = left ? 28 : 332;
+        const y = 320;
+        ctx.fillStyle = "rgba(255, 232, 159, .92)";
+        ctx.beginPath();
+        if (left) {
+          ctx.moveTo(x - 12, y);
+          ctx.lineTo(x + 10, y - 16);
+          ctx.lineTo(x + 10, y + 16);
+        } else {
+          ctx.moveTo(x + 12, y);
+          ctx.lineTo(x - 10, y - 16);
+          ctx.lineTo(x - 10, y + 16);
+        }
+        ctx.closePath();
+        ctx.fill();
+      } else if (Math.abs(yDelta) > 8) {
+        const x = Config.W / 2 + (delta / (Config.fov / 2)) * (Config.W / 2);
+        const y = yDelta > 0 ? 168 : 486;
+        ctx.fillStyle = "rgba(255, 232, 159, .92)";
+        ctx.beginPath();
+        if (yDelta > 0) {
+          ctx.moveTo(x, y - 13);
+          ctx.lineTo(x - 13, y + 10);
+          ctx.lineTo(x + 13, y + 10);
+        } else {
+          ctx.moveTo(x, y + 13);
+          ctx.lineTo(x - 13, y - 10);
+          ctx.lineTo(x + 13, y - 10);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawParticles() {
+      for (const p of State.particles) {
+        const alpha = clamp(p.life / p.max, 0, 1);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        if (p.type === "heart") {
+          safeText("♥", p.x, p.y, p.size, "#ff6f9c");
+        } else {
+          ctx.fillStyle = "#fff3aa";
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+      for (const f of State.floaters) {
+        ctx.save();
+        ctx.globalAlpha = clamp(f.life / f.max, 0, 1);
+        safeText(f.text, f.x, f.y, 14, f.color);
+        ctx.restore();
+      }
+    }
+
+    function drawToast() {
+      if (State.toastTimer <= 0 || !State.toast) return;
+      ctx.save();
+      ctx.globalAlpha = clamp(State.toastTimer, 0, 1);
+      ctx.fillStyle = "rgba(49, 32, 25, .78)";
+      roundRect(38, 82, 284, 34, 12, true);
+      safeText(State.toast, 180, 99, 13, "#fff5d2");
+      ctx.restore();
+    }
+
+    function drawMenu() {
+      drawBackground();
+      ctx.fillStyle = "rgba(47, 31, 23, .56)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      safeText("晨光小鸡舍", 180, 128, 30, "#fff1c2");
+      safeText(Config.version, 180, 154, 12, "#ffd98f");
+      safeText("转动手机，喂干草、摸小鸡、捡鸡蛋", 180, 172, 14, "#ffe6b0");
+      safeText(`已照料 ${State.save.days || 0} 天 · 鸡蛋 ${State.save.eggs || 0} 个`, 180, 203, 13, "#ffd98f");
+      safeText(`完美日 ${State.save.perfectDays || 0} · 最佳 ${formatBestClear()}`, 180, 226, 12, "#ffd98f");
+      safeText(`好感：米粒 ${heartsFromFriendship(getFriendship("chickA"))}/5 · 栗栗 ${heartsFromFriendship(getFriendship("chickB"))}/5 · 小葵 ${heartsFromFriendship(getFriendship("chickC"))}/5`, 180, 250, 11, "#ffe6b0");
+      drawButton("开始照料", 86, 282, 188, 48, true);
+      drawButton("电脑测试", 104, 346, 152, 40);
+      safeText("推荐手机打开。陀螺仪和手指拖动可同时使用。", 180, 440, 12, "#ffe6b0");
+      safeText("电脑端点击“电脑测试”，用鼠标拖动模拟转手机。", 180, 462, 12, "#ffe6b0");
+      safeText("纯离线 Canvas MVP · 无外部资源", 180, 494, 12, "#d8b982");
+    }
+
+    function drawResult() {
+      drawBackground();
+      ctx.fillStyle = "rgba(47, 31, 23, .62)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      ctx.fillStyle = "rgba(255, 239, 197, .94)";
+      roundRect(32, 118, 296, 330, 18, true);
+      safeText(State.resultTitle || "今日照料完成", 180, 176, 22, "#604026");
+      safeText(State.resultBody || "", 180, 218, 13, "#765238");
+      safeText(`最佳完成：${formatBestClear()} · 完美日 ${State.save.perfectDays || 0}`, 180, 242, 12, "#9a6a3c");
+      safeText(`本局好感：米粒 +${State.sessionFriendshipGain.chickA || 0} · 栗栗 +${State.sessionFriendshipGain.chickB || 0} · 小葵 +${State.sessionFriendshipGain.chickC || 0}`, 180, 266, 12, "#765238");
+      safeText(`累计：普通 ${State.save.eggQuality.normal || 0} · 银 ${State.save.eggQuality.silver || 0} · 金 ${State.save.eggQuality.gold || 0} · 稀有 ${State.save.eggQuality.rare || 0}`, 180, 296, 12, "#765238");
+      safeText(`已照料天数：${State.save.days} · 累计鸡蛋：${State.save.eggs}`, 180, 326, 12, "#765238");
+      safeText("明天也来看看它们吧", 180, 366, 14, "#9a6a3c");
+      drawButton("再照料一次", 86, 482, 188, 48, true);
+      drawButton("返回菜单", 104, 548, 152, 40);
+    }
+
+    function formatBestClear() {
+      return State.save.bestClear ? `${State.save.bestClear}s` : "--";
+    }
+
+    function drawError(msg) {
+      ctx.fillStyle = "#2f211b";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      safeText(msg || Config.errorText, 180, 310, 16, "#fff5d2");
+    }
+
+    function drawButton(text, x, y, w, h, primary = false) {
+      ctx.fillStyle = primary ? "#f0b45e" : "rgba(255, 235, 190, .18)";
+      ctx.strokeStyle = primary ? "#ffe4a7" : "rgba(255, 235, 190, .46)";
+      ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 12, true, true);
+      safeText(text, x + w / 2, y + h / 2, primary ? 17 : 14, primary ? "#533420" : "#fff2ca");
+    }
+
+    function roundRect(x, y, w, h, r, fill, stroke) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, Config.W, Config.H);
+      if (State.screen === "menu") drawMenu();
+      else if (State.screen === "playing") {
+        drawBackground();
+        drawObjects();
+        drawParticles();
+        drawHud();
+        drawToast();
+      } else if (State.screen === "result") drawResult();
+      else drawError();
+    }
+
+    function getPoint(e) {
+      const r = canvas.getBoundingClientRect();
+      const t = e.touches ? e.touches[0] : e;
+      return {
+        x: (t.clientX - r.left) * Config.W / r.width,
+        y: (t.clientY - r.top) * Config.H / r.height
+      };
+    }
+
+    function hit(x, y, bx, by, bw, bh) {
+      return x >= bx && x <= bx + bw && y >= by && y <= by + bh;
+    }
+
+    function pointerDown(e) {
+      e.preventDefault();
+      Audio.ensure();
+      const p = getPoint(e);
+      State.drag.active = true;
+      State.drag.moved = false;
+      State.drag.canPan = State.screen === "playing" && !isPlayingControl(p.x, p.y);
+      State.drag.x = p.x;
+      State.drag.y = p.y;
+    }
+
+    function pointerMove(e) {
+      if (!State.drag.active) return;
+      e.preventDefault();
+      const p = getPoint(e);
+      const dx = p.x - State.drag.x;
+      const dy = p.y - State.drag.y;
+      if (Math.hypot(dx, dy) > 2) State.drag.moved = true;
+      State.drag.x = p.x;
+      State.drag.y = p.y;
+      if (State.drag.canPan) {
+        State.drag.yaw = normDeg(State.drag.yaw - dx * 0.32);
+        State.drag.pitch = clamp(State.drag.pitch + dy * 0.11, -32, 32);
+      }
+    }
+
+    function pointerUp(e) {
+      e.preventDefault();
+      const p = getPoint(e.changedTouches ? e.changedTouches[0] : e);
+      const wasDrag = State.drag.moved;
+      const canPan = State.drag.canPan;
+      State.drag.active = false;
+      State.drag.moved = false;
+      State.drag.canPan = false;
+      if (wasDrag && canPan) return;
+      handleTap(p.x, p.y);
+    }
+
+    function isPlayingControl(x, y) {
+      return hit(x, y, 16, 584, 64, 34) || hit(x, y, 90, 584, 64, 34);
+    }
+
+    function handleTap(x, y) {
+      if (State.screen === "menu") {
+        if (hit(x, y, 86, 282, 188, 48)) requestMotionAndStart();
+        else if (hit(x, y, 104, 346, 152, 40)) {
+          State.sensorMode = "drag";
+          State.sensorReady = false;
+          State.desktopSim = true;
+          startGame();
+        }
+      } else if (State.screen === "playing") {
+        if (hit(x, y, 16, 584, 64, 34)) calibrate();
+        else if (hit(x, y, 90, 584, 64, 34)) endGame(false);
+        else interact();
+      } else if (State.screen === "result") {
+        if (hit(x, y, 86, 482, 188, 48)) startGame();
+        else if (hit(x, y, 104, 548, 152, 40)) State.screen = "menu";
+      }
+    }
+
+    function loop(ts) {
+      try {
+        const dt = Math.min(0.05, (ts - (State.lastTime || ts)) / 1000);
+        State.lastTime = ts;
+        update(dt);
+        render();
+        requestAnimationFrame(loop);
+      } catch (err) {
+        console.error(err);
+        drawError(Config.errorText);
+      }
+    }
+
+    function init() {
+      try {
+        loadSave();
+        resetObjects();
+        window.addEventListener("deviceorientation", onOrientation, true);
+        canvas.addEventListener("pointerdown", pointerDown, { passive: false });
+        canvas.addEventListener("pointermove", pointerMove, { passive: false });
+        canvas.addEventListener("pointerup", pointerUp, { passive: false });
+        canvas.addEventListener("pointercancel", pointerUp, { passive: false });
+        document.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
+        requestAnimationFrame(loop);
+      } catch (err) {
+        console.error(err);
+        drawError(Config.errorText);
+      }
+    }
+
+    init();
+  })();
+  </script>
+</body>
+</html>
