@@ -101,7 +101,7 @@
       look: { yaw: 0, pitch: 0 },
       particles: [],
       floaters: [],
-      save: { days: 0, eggs: 0, bestClear: 0, perfectDays: 0, friendship: {}, eggQuality: { normal: 0, silver: 0, gold: 0, rare: 0 } },
+      save: { days: 0, eggs: 0, bestClear: 0, perfectDays: 0, friendship: {}, eggQuality: { normal: 0, silver: 0, gold: 0, rare: 0 }, coins: 0, hayStorage: 10, heatLamp: false },
       objects: []
     };
 
@@ -208,6 +208,9 @@
           State.save.perfectDays = parsed.perfectDays || 0;
           State.save.friendship = Object.assign({}, State.save.friendship || {}, parsed.friendship || {});
           State.save.eggQuality = Object.assign({ normal: 0, silver: 0, gold: 0, rare: 0 }, parsed.eggQuality || {});
+          State.save.coins = parsed.coins || 0;
+          State.save.hayStorage = parsed.hayStorage !== undefined ? parsed.hayStorage : 10;
+          State.save.heatLamp = parsed.heatLamp || false;
         }
       } catch (_) {}
     }
@@ -226,9 +229,10 @@
     function getEggQuality() {
       const ids = ["chickA", "chickB", "chickC"];
       const avg = ids.reduce((sum, id) => sum + getFriendship(id), 0) / ids.length;
-      if (avg >= 900) return { key: "rare", label: "稀有蛋", color: "#d8b4ff", sparkle: "#f3ddff" };
-      if (avg >= 600) return { key: "gold", label: "金星蛋", color: "#ffe07a", sparkle: "#fff3a8" };
-      if (avg >= 200) return { key: "silver", label: "银星蛋", color: "#e7edf4", sparkle: "#ffffff" };
+      const bonus = State.save.heatLamp ? 300 : 0;
+      if (avg + bonus >= 900) return { key: "rare", label: "稀有蛋", color: "#d8b4ff", sparkle: "#f3ddff" };
+      if (avg + bonus >= 600) return { key: "gold", label: "金星蛋", color: "#ffe07a", sparkle: "#fff3a8" };
+      if (avg + bonus >= 200) return { key: "silver", label: "银星蛋", color: "#e7edf4", sparkle: "#ffffff" };
       return { key: "normal", label: "普通蛋", color: "#fff4d2", sparkle: "#ffffff" };
     }
 
@@ -266,6 +270,7 @@
       State.collectedEggs = [];
       State.sessionFriendshipGain = {};
       State.milestones = {};
+      State.sessionCoins = 0;
       State.ended = false;
       State.toast = "转动手机，也可按住画面拖动视角";
       State.toastTimer = 2.2;
@@ -349,17 +354,23 @@
           State.sessionFriendshipGain[o.id] = gain;
         }
       }
+      const priceMap = { normal: 10, silver: 20, gold: 50, rare: 100 };
+      State.sessionCoins = 0;
+      for (const egg of State.collectedEggs) {
+        State.sessionCoins += priceMap[egg.key] || 10;
+      }
+      State.save.coins += State.sessionCoins;
       saveGame();
       if (perfect) {
         State.resultTitle = "今天的小鸡都吃饱啦";
-        State.resultBody = `评分 ${State.resultGrade} · 用时 ${State.clearTime}s · 鸡蛋 ${formatEggSummary()}`;
+        State.resultBody = `评分 ${State.resultGrade} · 用时 ${State.clearTime}s · 赚取 ${State.sessionCoins} 金币`;
         Audio.beep("win");
       } else if (auto) {
         State.resultTitle = "还有小鸡在等你";
-        State.resultBody = `评分 ${State.resultGrade} · 完成度 ${completed}/8 · 鸡蛋 ${formatEggSummary()}`;
+        State.resultBody = `评分 ${State.resultGrade} · 完成度 ${completed}/8 · 赚取 ${State.sessionCoins} 金币`;
       } else {
         State.resultTitle = "今日照料暂停";
-        State.resultBody = `评分 ${State.resultGrade} · 完成度 ${completed}/8 · 鸡蛋 ${formatEggSummary()}`;
+        State.resultBody = `评分 ${State.resultGrade} · 完成度 ${completed}/8 · 赚取 ${State.sessionCoins} 金币`;
       }
     }
 
@@ -459,12 +470,12 @@
           State.toastTimer = 1;
           return;
         }
-        if (State.hayLeft <= 0) {
-          State.toast = "干草拿完啦";
-          State.toastTimer = 1;
+        if (State.save.hayStorage <= 0) {
+          State.toast = "干草耗尽，请去商店购买";
+          State.toastTimer = 1.5;
           return;
         }
-        State.hayLeft -= 1;
+        State.save.hayStorage -= 1;
         State.holding = "hay";
         addFloater("手持干草", Config.W - 82, Config.H - 92, "#ffe9a8");
         Audio.beep("hay");
@@ -630,16 +641,20 @@
       if (State.toastTimer > 0) State.toastTimer -= dt;
     }
 
+    
     function drawBackground() {
       const w = Config.W, h = Config.H;
-      const grd = ctx.createLinearGradient(0, 0, 0, h);
-      grd.addColorStop(0, "#f9d58c");
-      grd.addColorStop(0.38, "#f5bf72");
-      grd.addColorStop(0.39, "#8b5b35");
-      grd.addColorStop(1, "#5a3828");
-      ctx.fillStyle = grd;
-      ctx.fillRect(0, 0, w, h);
-
+      // Wall Planks
+      ctx.fillStyle = "#5c3a21";
+      ctx.fillRect(0, 0, w, 385);
+      for (let y = 0; y < 385; y += 40) {
+        ctx.fillStyle = (y / 40) % 2 === 0 ? "#644127" : "#55351e";
+        ctx.fillRect(0, y, w, 38);
+        ctx.fillStyle = "rgba(0,0,0,0.1)";
+        ctx.fillRect(0, y+38, w, 2);
+      }
+      
+      // Light ray
       const sunX = w * 0.5 - normDeg(State.look.yaw) * 1.2;
       ctx.save();
       ctx.globalAlpha = 0.28;
@@ -653,28 +668,25 @@
       ctx.fill();
       ctx.restore();
 
+      // Window and props
       drawWindow(180 - normDeg(State.look.yaw - 4) * 1.1, 106);
       drawWallProp(-110, "草捆");
       drawWallProp(118, "木桶");
 
+      // Floor
       ctx.fillStyle = "#70462e";
       ctx.fillRect(0, 385, w, h - 385);
-      for (let y = 398; y < h; y += 34) {
-        ctx.strokeStyle = "rgba(55, 32, 22, .32)";
-        ctx.lineWidth = 2;
+      // Hay spread on floor
+      for (let y = 398; y < h; y += 20) {
+        ctx.strokeStyle = "rgba(180, 140, 60, .4)";
+        ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.moveTo(0, y);
-        ctx.lineTo(w, y + Math.sin(y) * 8);
-        ctx.stroke();
-      }
-      for (let x = -50; x < w + 80; x += 58) {
-        ctx.strokeStyle = "rgba(255, 222, 160, .08)";
-        ctx.beginPath();
-        ctx.moveTo(x - State.look.yaw * 0.25, 390);
-        ctx.lineTo(x + 28 - State.look.yaw * 0.4, h);
+        ctx.lineTo(w, y + Math.sin(y) * 12);
         ctx.stroke();
       }
     }
+
 
     function drawWindow(x, y) {
       ctx.save();
@@ -982,22 +994,57 @@
       ctx.restore();
     }
 
+    
     function drawMenu() {
-      drawBackground();
-      ctx.fillStyle = "rgba(47, 31, 23, .56)";
+      ctx.fillStyle = "rgba(42, 28, 20, .96)";
       ctx.fillRect(0, 0, Config.W, Config.H);
-      safeText("晨光小鸡舍", 180, 128, 30, "#fff1c2");
-      safeText(Config.version, 180, 154, 12, "#ffd98f");
-      safeText("转动手机，喂干草、摸小鸡、捡鸡蛋", 180, 172, 14, "#ffe6b0");
-      safeText(`已照料 ${State.save.days || 0} 天 · 鸡蛋 ${State.save.eggs || 0} 个`, 180, 203, 13, "#ffd98f");
-      safeText(`完美日 ${State.save.perfectDays || 0} · 最佳 ${formatBestClear()}`, 180, 226, 12, "#ffd98f");
-      safeText(`好感：米粒 ${heartsFromFriendship(getFriendship("chickA"))}/5 · 栗栗 ${heartsFromFriendship(getFriendship("chickB"))}/5 · 小葵 ${heartsFromFriendship(getFriendship("chickC"))}/5`, 180, 250, 11, "#ffe6b0");
-      drawButton("开始照料", 86, 282, 188, 48, true);
-      drawButton("电脑测试", 104, 346, 152, 40);
-      safeText("推荐手机打开。陀螺仪和手指拖动可同时使用。", 180, 440, 12, "#ffe6b0");
-      safeText("电脑端点击“电脑测试”，用鼠标拖动模拟转手机。", 180, 462, 12, "#ffe6b0");
-      safeText("纯离线 Canvas MVP · 无外部资源", 180, 494, 12, "#d8b982");
+      safeText("晨光小鸡舍", Config.W / 2, 160, 32, "#fcd264");
+      safeText("TIDEGRAIN BAY", Config.W / 2, 196, 13, "#ae7b51");
+      safeText(`最高评分: ${State.save.bestClear ? "S" : "-"}  完美天数: ${State.save.perfectDays}`, Config.W / 2, 235, 12, "#705641");
+      safeText(`金币: ${State.save.coins}`, Config.W / 2, 255, 12, "#fcd264");
+      
+      drawButton(86, 282, 188, 48, "开始照料", true);
+      drawButton(86, 346, 188, 48, "进入商店", false);
+      drawButton(104, 410, 152, 40, "电脑测试", false);
+      
+      const px = Config.W / 2 - 28, py = Config.H - 120;
+      ctx.fillStyle = "#fff6d7";
+      ctx.beginPath();
+      ctx.ellipse(px, py, 22, 24, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(px + 10, py - 23, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#ee5b45";
+      ctx.beginPath();
+      ctx.moveTo(px + 6, py - 39); ctx.lineTo(px + 12, py - 49); ctx.lineTo(px + 18, py - 39);
+      ctx.fill();
+      ctx.fillStyle = "#ec9b24";
+      ctx.beginPath();
+      ctx.moveTo(px + 23, py - 22); ctx.lineTo(px + 35, py - 17); ctx.lineTo(px + 23, py - 12);
+      ctx.fill();
+      ctx.fillStyle = "#34241e";
+      ctx.beginPath();
+      ctx.arc(px + 13, py - 25, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      safeText(`第 ${State.save.days + 1} 天`, px + 28, py + 56, 14, "#8a6042");
     }
+    
+    function drawShop() {
+      ctx.fillStyle = "rgba(42, 28, 20, .96)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      safeText("小鸡商店", Config.W / 2, 100, 28, "#fcd264");
+      safeText(`当前金币: ${State.save.coins}`, Config.W / 2, 140, 16, "#ffe4a7");
+      
+      drawButton(50, 200, 260, 60, `买干草 (+10) - 50金币`, false);
+      safeText(`当前库存: ${State.save.hayStorage}`, Config.W / 2, 275, 12, "#ae7b51");
+      
+      drawButton(50, 320, 260, 60, State.save.heatLamp ? "已购买保温灯" : "买保温灯 - 500金币", false);
+      safeText(State.save.heatLamp ? "小鸡们现在很暖和" : "提高出现高品质鸡蛋的概率", Config.W / 2, 395, 12, "#ae7b51");
+      
+      drawButton(104, 480, 152, 40, "返回", false);
+    }
+
 
     function drawResult() {
       drawBackground();
@@ -1052,6 +1099,7 @@
     function render() {
       ctx.clearRect(0, 0, Config.W, Config.H);
       if (State.screen === "menu") drawMenu();
+      else if (State.screen === "shop") drawShop();
       else if (State.screen === "playing") {
         drawBackground();
         drawObjects();
@@ -1120,11 +1168,30 @@
     function handleTap(x, y) {
       if (State.screen === "menu") {
         if (hit(x, y, 86, 282, 188, 48)) requestMotionAndStart();
-        else if (hit(x, y, 104, 346, 152, 40)) {
+        else if (hit(x, y, 86, 346, 188, 48)) State.screen = "shop";
+        else if (hit(x, y, 104, 410, 152, 40)) {
           State.sensorMode = "drag";
           State.sensorReady = false;
           State.desktopSim = true;
           startGame();
+        }
+      } else if (State.screen === "shop") {
+        if (hit(x, y, 50, 200, 260, 60)) {
+          if (State.save.coins >= 50) {
+            State.save.coins -= 50;
+            State.save.hayStorage += 10;
+            saveGame();
+            Audio.beep("pet");
+          } else { Audio.beep("miss"); }
+        } else if (hit(x, y, 50, 320, 260, 60) && !State.save.heatLamp) {
+          if (State.save.coins >= 500) {
+            State.save.coins -= 500;
+            State.save.heatLamp = true;
+            saveGame();
+            Audio.beep("win");
+          } else { Audio.beep("miss"); }
+        } else if (hit(x, y, 104, 480, 152, 40)) {
+          State.screen = "menu";
         }
       } else if (State.screen === "playing") {
         if (hit(x, y, 16, 584, 64, 34)) calibrate();
