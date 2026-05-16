@@ -57,8 +57,8 @@
       H: 640,
       fov: 96,
       pitchScale: 5.2,
-      yawSmoothing: 0.18,
-      pitchSmoothing: 0.18,
+      yawSmoothing: 0.08,
+      pitchSmoothing: 0.08,
       gameSeconds: 90,
       errorText: "哎呀，出错了，请重启试试吧~",
       tasks: { hay: 3, pets: 3, eggs: 2 },
@@ -103,6 +103,41 @@
       floaters: [],
       save: { days: 0, eggs: 0, bestClear: 0, perfectDays: 0, friendship: {}, eggQuality: { normal: 0, silver: 0, gold: 0, rare: 0 } },
       objects: []
+    };
+
+    const Assets = {
+      loaded: false,
+      imgs: {},
+      load() {
+        const list = [
+          "chicken_white", "chicken_brown", "chicken_yellow",
+          "egg_normal", "egg_silver", "egg_gold", "egg_rare",
+          "hopper", "trough_empty", "trough_filled"
+        ];
+        let count = 0;
+        return new Promise(resolve => {
+          list.forEach(name => {
+            const img = new Image();
+            img.onload = () => {
+              count++;
+              if (count === list.length) {
+                Assets.loaded = true;
+                resolve();
+              }
+            };
+            img.onerror = () => {
+              console.warn(`Failed to load ${name}`);
+              count++;
+              if (count === list.length) {
+                Assets.loaded = true;
+                resolve();
+              }
+            };
+            img.src = `assets/${name}.png`;
+            Assets.imgs[name] = img;
+          });
+        });
+      }
     };
 
     const Audio = {
@@ -698,79 +733,62 @@
     }
 
     function drawHopper() {
-      ctx.fillStyle = "#6d4328";
-      roundRect(-28, -24, 56, 48, 7, true);
-      ctx.fillStyle = "#c7903e";
-      for (let i = -20; i <= 18; i += 8) {
-        ctx.beginPath();
-        ctx.moveTo(i, -22);
-        ctx.lineTo(i + 10, -40);
-        ctx.lineTo(i + 20, -22);
-        ctx.fill();
+      if (Assets.loaded && Assets.imgs.hopper) {
+        ctx.drawImage(Assets.imgs.hopper, -32, -48, 64, 64);
+      } else {
+        ctx.fillStyle = "#6d4328";
+        roundRect(-28, -24, 56, 48, 7, true);
+        ctx.fillStyle = "#4b2d1e";
+        ctx.fillRect(-22, -2, 44, 8);
       }
-      ctx.fillStyle = "#4b2d1e";
-      ctx.fillRect(-22, -2, 44, 8);
     }
 
     function drawTrough(o) {
-      ctx.fillStyle = "#75462b";
-      roundRect(-33, -12, 66, 24, 7, true);
-      ctx.fillStyle = "#4d2d1f";
-      roundRect(-27, -7, 54, 12, 5, true);
-      if (o.state === "filled") {
-        ctx.fillStyle = "#d8ad55";
-        for (let i = -22; i <= 18; i += 8) {
-          ctx.beginPath();
-          ctx.moveTo(i, -6);
-          ctx.lineTo(i + 9, -21);
-          ctx.lineTo(i + 17, -6);
-          ctx.fill();
-        }
-        if (State.lastFedId === o.id && performance.now() - (o.filledAt || 0) < 1200) {
-          ctx.save();
-          ctx.globalAlpha = 0.45 + Math.sin(performance.now() * 0.02) * 0.15;
-          ctx.strokeStyle = "#fff0a7";
-          ctx.lineWidth = 3;
-          ctx.beginPath();
-          ctx.ellipse(0, -5, 40, 22, 0, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.restore();
-        }
+      if (Assets.loaded) {
+        const img = o.state === "filled" ? Assets.imgs.trough_filled : Assets.imgs.trough_empty;
+        if (img) ctx.drawImage(img, -36, -24, 72, 48);
+      } else {
+        ctx.fillStyle = "#75462b";
+        roundRect(-33, -12, 66, 24, 7, true);
+        ctx.fillStyle = "#4d2d1f";
+        roundRect(-27, -7, 54, 12, 5, true);
+      }
+      if (o.state === "filled" && State.lastFedId === o.id && performance.now() - (o.filledAt || 0) < 1200) {
+        ctx.save();
+        ctx.globalAlpha = 0.45 + Math.sin(performance.now() * 0.02) * 0.15;
+        ctx.strokeStyle = "#fff0a7";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.ellipse(0, -5, 40, 22, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
       }
     }
 
     function drawChicken(o) {
       const hop = Math.sin(o.bob) * (o.state === "happy" ? 4 : 1.5);
       ctx.translate(0, hop);
+      
       ctx.fillStyle = "rgba(55, 25, 15, .18)";
       ctx.beginPath();
       ctx.ellipse(0, 24, 28, 8, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = o.color;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, 22, 24, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(10, -23, 15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#ee5b45";
-      ctx.beginPath();
-      ctx.moveTo(6, -39); ctx.lineTo(12, -49); ctx.lineTo(18, -39);
-      ctx.fill();
-      ctx.fillStyle = "#ec9b24";
-      ctx.beginPath();
-      ctx.moveTo(23, -22); ctx.lineTo(35, -17); ctx.lineTo(23, -12);
-      ctx.fill();
-      ctx.fillStyle = "#34241e";
-      ctx.beginPath();
-      ctx.arc(13, -25, 2.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "#c87930";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(-8, 21); ctx.lineTo(-12, 31);
-      ctx.moveTo(8, 21); ctx.lineTo(12, 31);
-      ctx.stroke();
+
+      if (Assets.loaded) {
+        let imgName = "chicken_white";
+        if (o.id === "chickB") imgName = "chicken_brown";
+        if (o.id === "chickC") imgName = "chicken_yellow";
+        const img = Assets.imgs[imgName];
+        if (img) {
+          ctx.drawImage(img, -28, -48, 56, 56);
+        }
+      } else {
+        ctx.fillStyle = o.color;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 22, 24, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
       if (o.pet) {
         safeText("♥", -20, -38, 18, "#ff6f9c");
       }
@@ -791,14 +809,20 @@
       ctx.beginPath();
       ctx.ellipse(0, 17, 17, 5, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = o.quality ? o.quality.color : "#fff4d2";
-      ctx.beginPath();
-      ctx.ellipse(0, 0, 13, 18, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "rgba(255,255,255,.55)";
-      ctx.beginPath();
-      ctx.ellipse(-4, -6, 4, 7, -0.6, 0, Math.PI * 2);
-      ctx.fill();
+
+      if (Assets.loaded) {
+        const key = o.quality ? o.quality.key : "normal";
+        const img = Assets.imgs[`egg_${key}`];
+        if (img) {
+          ctx.drawImage(img, -18, -24, 36, 36);
+        }
+      } else {
+        ctx.fillStyle = o.quality ? o.quality.color : "#fff4d2";
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 13, 18, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
       if (o.quality && o.quality.key !== "normal") {
         safeText("✦", 0, -24, 13, o.quality.sparkle);
       }
@@ -1135,7 +1159,9 @@
         canvas.addEventListener("pointerup", pointerUp, { passive: false });
         canvas.addEventListener("pointercancel", pointerUp, { passive: false });
         document.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
-        requestAnimationFrame(loop);
+        Assets.load().then(() => {
+          requestAnimationFrame(loop);
+        });
       } catch (err) {
         console.error(err);
         drawError(Config.errorText);
