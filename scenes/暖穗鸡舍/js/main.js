@@ -69,18 +69,24 @@ function update(dt) {
 
 function render() {
   ctx.clearRect(0, 0, Config.W, Config.H);
-  if (State.screen === "boot") drawBoot();
+  if (State.screen === "boot" || State.screen === "boot_done") drawBoot();
+  else if (State.screen === "auth") drawAuth();
   else if (State.screen === "permission") drawPermission();
   else if (State.screen === "calibrate") drawCalibrate();
   else if (State.screen === "menu") drawMenu();
+  else if (State.screen === "slots") drawSlotSelect();
   else if (State.screen === "shop") drawShop();
+  else if (State.screen === "customselect") drawCustomModeSelect();
+  else if (State.screen === "cmsetup") drawCustomSetup();
   else if (State.screen === "playing") {
     drawBackground();
     drawObjects();
     drawParticles();
     drawHud();
     drawToast();
-    if (State.paused) drawPauseMenu();
+    if (State.shopOverlay) drawPlayingShopOverlay();
+    if (State.statusPanel) drawChickenStatusPanel();
+    if (State.paused && !State.shopOverlay && !State.statusPanel) drawPauseMenu();
   } else if (State.screen === "nextday") drawNextDay();
   else if (State.screen === "result") drawResult();
   else drawError();
@@ -108,7 +114,12 @@ function init() {
     canvas.addEventListener("pointermove", pointerMove, { passive: false });
     canvas.addEventListener("pointerup", pointerUp, { passive: false });
     canvas.addEventListener("pointercancel", pointerUp, { passive: false });
-    document.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
+    // Touch events removed - using pointer events only (Pointer Events Level 2 handles touch-to-pointer mapping)
+    // canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
+    // canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
+    // canvas.addEventListener("touchend", handleTouchEnd, { passive: false });
+    // canvas.addEventListener("touchcancel", handleTouchEnd, { passive: false });
+    document.addEventListener("keydown", handleAuthKey, false);
     Assets.load().then(() => {
       requestAnimationFrame(loop);
     });

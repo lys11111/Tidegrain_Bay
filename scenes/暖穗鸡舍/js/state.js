@@ -2,6 +2,12 @@
 
 const State = {
   screen: "boot",
+  authScreen: "login",
+  authUsername: "",
+  authPassword: "",
+  authFocus: "username",
+  authError: "",
+  loggedInUser: null,
   sensorMode: "drag",
   desktopSim: false,
   sensorReady: false,
@@ -27,9 +33,15 @@ const State = {
   milestones: {},
   ended: false,
   paused: false,
+  shopOverlay: false,
+  statusPanel: false,
+  pressedButton: null,
   drag: { active: false, moved: false, canPan: false, x: 0, y: 0, yaw: 0, pitch: 0 },
   orientation: { alpha: 0, beta: 0, gamma: 0, has: false },
-  calibration: { alpha: 0, beta: 70 },
+  calibration: { alpha: 0, beta: 70, gamma: 0 },
+  gyroBaseAlpha: 0,
+  gyroAccumulatedYaw: 0,
+  lastAlpha: null,
   targetLook: { yaw: 0, pitch: 0 },
   look: { yaw: 0, pitch: 0 },
   particles: [],
@@ -44,7 +56,18 @@ const State = {
     coins: 0,
     hayStorage: 10,
     heatLamp: false,
-    chickenHunger: {}
+    chickenHunger: {},
+    users: {},
+    currentUser: null,
+    ownedChickens: {},
+    slots: [],
+    currentSlot: 0
   },
-  objects: []
+  objects: [],
+  slots: [],
+  currentSlot: 0,
+  totalEggsAtStart: 0,
+  customMode: { enabled: false, chickens: 3, coins: 0, hay: 10, ownedChickens: {} },
+  customEdit: { field: null, value: "" },
+  pendingSlotIdx: null
 };

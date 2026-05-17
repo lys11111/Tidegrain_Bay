@@ -3,8 +3,7 @@
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
 function normDeg(v) {
-  let n = ((v + 180) % 360 + 360) % 360 - 180;
-  return n === -180 ? 180 : n;
+  return ((v + 180) % 360 + 360) % 360 - 180;
 }
 
 function angleDistance(a, b) { return Math.abs(normDeg(a - b)); }

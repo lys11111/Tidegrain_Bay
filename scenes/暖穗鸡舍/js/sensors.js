@@ -10,19 +10,37 @@ function onOrientation(e) {
 
 function updateLook() {
   if (State.sensorMode === "gyro" && State.orientation.has && !State.desktopSim) {
-    State.targetLook.yaw = normDeg(State.orientation.alpha - State.calibration.alpha + State.drag.yaw);
-    State.targetLook.pitch = clamp((State.orientation.beta - State.calibration.beta) * 0.7 + State.drag.pitch, -Config.pitchRange, Config.pitchRange);
+    if (State.lastAlpha !== null) {
+      let deltaAlpha = State.orientation.alpha - State.lastAlpha;
+      if (deltaAlpha > 180) deltaAlpha -= 360;
+      if (deltaAlpha < -180) deltaAlpha += 360;
+      State.gyroAccumulatedYaw += deltaAlpha;
+    }
+    State.lastAlpha = State.orientation.alpha;
+
+    const yawDelta = State.orientation.gamma - State.calibration.gamma;
+    State.targetLook.yaw = State.gyroAccumulatedYaw - yawDelta;
+    State.targetLook.pitch = clamp(
+      (State.orientation.beta - State.calibration.beta) * 0.7 + State.drag.pitch,
+      -Config.pitchRange, Config.pitchRange
+    );
   } else {
     State.targetLook.yaw = normDeg(State.drag.yaw);
     State.targetLook.pitch = clamp(State.drag.pitch, -Config.pitchRange, Config.pitchRange);
   }
-  State.look.yaw = normDeg(State.look.yaw + normDeg(State.targetLook.yaw - State.look.yaw) * Config.yawSmoothing);
+
+  const rawDiff = State.targetLook.yaw - State.look.yaw;
+  State.look.yaw = normDeg(State.look.yaw + rawDiff * Config.yawSmoothing);
   State.look.pitch += (State.targetLook.pitch - State.look.pitch) * Config.pitchSmoothing;
 }
 
 function calibrate() {
   State.calibration.alpha = State.orientation.has ? State.orientation.alpha : 0;
   State.calibration.beta = State.orientation.has ? State.orientation.beta : 70;
+  State.calibration.gamma = State.orientation.has ? State.orientation.gamma : 0;
+  State.gyroBaseAlpha = State.orientation.has ? State.orientation.alpha : 0;
+  State.gyroAccumulatedYaw = 0;
+  State.lastAlpha = null;
   State.drag.yaw = 0;
   State.drag.pitch = 0;
   State.targetLook.yaw = 0;

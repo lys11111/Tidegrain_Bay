@@ -1,41 +1,137 @@
 "use strict";
 
+const CHICKEN_TIERS = {
+  yellow: { name: "小黄", color: "#ffd85e", price: 200, tierKey: "yellow" },
+  white:  { name: "银羽", color: "#fff6d7", price: 400, tierKey: "white" },
+  brown:  { name: "金栗", color: "#c98242", price: 600, tierKey: "brown" }
+};
+
 function resetObjects() {
-  const chickIds = ["chickA", "chickB", "chickC"];
+  const hopper = { id: "hopper", type: "hopper", label: "干草料斗", action: "拿干草", yaw: 0, pitch: -58, angle: 13, state: "ready" };
+
+  const chickens = [];
+  const troughs = [];
+  const chickenIds = Object.keys(State.save.ownedChickens);
+
+  if (chickenIds.length === 0) {
+    chickenIds.push("chickA", "chickB", "chickC");
+  }
+
+  const baseYaws = [-150, 40, 160];
+  const count = chickenIds.length;
+  for (let i = 0; i < count; i++) {
+    const id = chickenIds[i];
+    const data = State.save.ownedChickens[id];
+    if (!data) continue;
+    if (data.consecutiveHungryDays >= 3) continue;
+
+    const tier = data.tier || "yellow";
+    const tierInfo = CHICKEN_TIERS[tier];
+    let baseYaw;
+    if (i < baseYaws.length) {
+      baseYaw = baseYaws[i];
+    } else {
+      baseYaw = (360 / count) * i - 180;
+    }
+
+    chickens.push({
+      id,
+      type: "chicken",
+      label: data.name || tierInfo.name + (i + 1),
+      action: "摸摸",
+      yaw: baseYaw,
+      baseYaw,
+      pitch: -22 - (i * 3),
+      angle: 17,
+      state: "idle",
+      color: tierInfo.color,
+      tier,
+      pet: false,
+      bob: Math.random() * Math.PI * 2,
+      wander: Math.random() * 5,
+      animState: "idle",
+      animFrame: 0,
+      animTimer: 0,
+      dirFrame: 0,
+      hungry: !!State.save.chickenHunger?.[id]
+    });
+  }
+
+  const troughCount = chickens.length;
+  for (let i = 0; i < troughCount; i++) {
+    const angle = -30 + (troughCount > 1 ? i / (troughCount - 1) : 0.5) * 60;
+    troughs.push({
+      id: `trough_${i}`,
+      type: "trough",
+      label: `食槽 ${i + 1}`,
+      action: "放干草",
+      yaw: angle,
+      pitch: -55,
+      angle: 13,
+      state: "empty"
+    });
+  }
+
+  const eggs = [];
   const eggPositions = [
-    { yaw: -120, pitch: -36 },
-    { yaw: 20, pitch: -35 },
-    { yaw: 140, pitch: -36 }
+    { yaw: -120, pitch: -72 },
+    { yaw: 20, pitch: -70 },
+    { yaw: 140, pitch: -72 }
   ];
   let eggIdx = 0;
-  const eggs = [];
-  for (const id of chickIds) {
-    if (!State.save.chickenHunger?.[id]) {
-      const pos = eggPositions[eggIdx++];
-      const q = getEggQualityForChicken(id);
-      if (q) {
-        eggs.push({ id: `egg_${id}`, type: "egg", label: q.label, action: "拾取", yaw: pos.yaw, pitch: pos.pitch, angle: 15, state: "onGround", quality: q, fromChicken: id });
-      }
-    }
+
+  for (const id of chickenIds) {
+    const data = State.save.ownedChickens?.[id];
+    if (!data) continue;
+    if (data.consecutiveHungryDays >= 3) continue;
+    if (State.save.chickenHunger?.[id]) continue;
+    if (data.eggCooldown > 0) continue;
+
+    const q = getEggQualityForChicken(id);
+    if (!q) continue;
+
+    const pos = eggPositions[eggIdx++] || { yaw: eggIdx * 60 - 120, pitch: -35 };
+    eggs.push({
+      id: `egg_${id}_${Date.now()}`,
+      type: "egg",
+      label: q.label,
+      action: "拾取",
+      yaw: pos.yaw,
+      pitch: pos.pitch,
+      angle: 15,
+      state: "onGround",
+      quality: q,
+      fromChicken: id
+    });
   }
-  State.objects = [
-    { id: "hopper", type: "hopper", label: "干草料斗", action: "拿干草", yaw: 0, pitch: -4, angle: 13, state: "ready" },
-    { id: "trough1", type: "trough", label: "食槽 1", action: "放干草", yaw: -30, pitch: -18, angle: 13, state: "empty" },
-    { id: "trough2", type: "trough", label: "食槽 2", action: "放干草", yaw: 0, pitch: -18, angle: 13, state: "empty" },
-    { id: "trough3", type: "trough", label: "食槽 3", action: "放干草", yaw: 30, pitch: -18, angle: 13, state: "empty" },
-    { id: "chickA", type: "chicken", label: "米粒", action: "摸摸", yaw: -150, baseYaw: -150, pitch: -24, angle: 17, state: "idle", color: "#fff6d7", pet: false, bob: 0, wander: 0, animState: "idle", animFrame: 0, animTimer: 0, dirFrame: 0, hungry: !!State.save.chickenHunger?.chickA },
-    { id: "chickB", type: "chicken", label: "栗栗", action: "摸摸", yaw: 40, baseYaw: 40, pitch: -22, angle: 17, state: "idle", color: "#c98242", pet: false, bob: 1.7, wander: 1.2, animState: "idle", animFrame: 0, animTimer: 0, dirFrame: 0, hungry: !!State.save.chickenHunger?.chickB },
-    { id: "chickC", type: "chicken", label: "小葵", action: "摸摸", yaw: 160, baseYaw: 160, pitch: -25, angle: 17, state: "idle", color: "#ffd85e", pet: false, bob: 3.1, wander: 2.4, animState: "idle", animFrame: 0, animTimer: 0, dirFrame: 0, hungry: !!State.save.chickenHunger?.chickC },
-    ...eggs
-  ];
+
+  State.objects = [hopper, ...troughs, ...chickens, ...eggs];
 }
 
 function startGame() {
   Audio.ensure();
+  if (State.customMode.enabled) {
+    State.save.coins = State.customMode.coins;
+    State.save.hayStorage = State.customMode.hay;
+    const customChickens = {};
+    const names = ["米粒", "栗栗", "小葵", "金桔", "银霜", "琥珀", "青草", "暖阳", "星辰"];
+    for (let i = 0; i < State.customMode.chickens; i++) {
+      const id = `custom_${i}`;
+      customChickens[id] = { tier: "yellow", name: names[i] || `小鸡${i+1}`, eggCooldown: 0, consecutiveHungryDays: 0 };
+    }
+    State.save.ownedChickens = customChickens;
+    State.save.friendship = {};
+    State.save.chickenHunger = {};
+    State.customMode.enabled = false;
+  }
+  for (const id of Object.keys(State.save.ownedChickens)) {
+    const data = State.save.ownedChickens[id];
+    if (data.eggCooldown > 0) data.eggCooldown--;
+  }
   resetObjects();
   State.screen = "playing";
   State.holding = null;
-  State.hayLeft = Config.tasks.hay;
+  State.hayLeft = Math.min(Config.tasks.hay, State.save.hayStorage);
   State.feedPlaced = 0;
   State.lastFedId = null;
   State.eggsCollected = 0;
@@ -51,10 +147,13 @@ function startGame() {
   State.sessionCoins = 0;
   State.ended = false;
   State.paused = false;
+  State.shopOverlay = false;
+  State.statusPanel = false;
   State.toast = "转动手机，也可按住画面拖动视角";
   State.toastTimer = 2.2;
   State.particles.length = 0;
   State.floaters.length = 0;
+  State.totalEggsAtStart = State.objects.filter(o => o.type === "egg" && o.state !== "collected").length;
 }
 
 function endGame(auto) {
@@ -74,33 +173,60 @@ function endGame(auto) {
   for (const egg of State.collectedEggs) {
     State.save.eggQuality[egg.key] = (State.save.eggQuality[egg.key] || 0) + 1;
   }
+
+  const isFullyFed = State.feedPlaced >= Config.tasks.hay;
+
   for (const o of State.objects) {
-    if (o.type === "chicken") {
-      const wasHungry = State.save.chickenHunger?.[o.id];
-      const isHungry = State.feedPlaced < Config.tasks.hay;
-      State.save.chickenHunger[o.id] = isHungry;
-      if (!isHungry && o.pet) {
-        State.save.friendship[o.id] = clamp((State.save.friendship[o.id] || 0) + 5, 0, 1000);
-        State.sessionFriendshipGain[o.id] = (State.sessionFriendshipGain[o.id] || 0) + 5;
+    if (o.type !== "chicken") continue;
+    const data = State.save.ownedChickens?.[o.id];
+    if (!data) continue;
+
+    const wasHungry = State.save.chickenHunger?.[o.id];
+    const isHungry = !isFullyFed;
+    State.save.chickenHunger[o.id] = isHungry;
+
+    if (isHungry) {
+      data.consecutiveHungryDays++;
+      if (data.consecutiveHungryDays === 2) {
+        State.toast = `${o.label}已经连续饿了2天，再不喂食会死！`;
+        State.toastTimer = 4;
+        addFloater("⚠ 濒死警告", Config.W / 2, 300, "#ff5050");
       }
-      if (wasHungry && !isHungry) State.sessionFriendshipGain[o.id] = (State.sessionFriendshipGain[o.id] || 0) + 5;
-      let gain = 0;
-      if (o.pet) gain += 15;
-      if (State.feedPlaced >= Config.tasks.hay) gain += 8;
-      if (completed >= 8) gain += 5;
-      if (gain > 0 && !(State.feedPlaced >= Config.tasks.hay && !o.pet)) {
-        State.save.friendship[o.id] = clamp((State.save.friendship[o.id] || 0) + gain, 0, 1000);
-        State.sessionFriendshipGain[o.id] = (State.sessionFriendshipGain[o.id] || 0) + gain;
+      if (data.consecutiveHungryDays >= 3) {
+        removeDeadChicken(o.id);
+        continue;
       }
+    } else {
+      data.consecutiveHungryDays = 0;
+    }
+
+    data.eggCooldown = isHungry ? 2 : 1;
+
+    if (!isHungry && o.pet) {
+      State.save.friendship[o.id] = clamp((State.save.friendship[o.id] || 0) + 5, 0, 1000);
+      State.sessionFriendshipGain[o.id] = (State.sessionFriendshipGain[o.id] || 0) + 5;
+    }
+    if (wasHungry && !isHungry) State.sessionFriendshipGain[o.id] = (State.sessionFriendshipGain[o.id] || 0) + 5;
+
+    let gain = 0;
+    if (o.pet) gain += 15;
+    if (isFullyFed) gain += 8;
+    if (completed >= 8) gain += 5;
+    if (gain > 0 && !(isFullyFed && !o.pet)) {
+      State.save.friendship[o.id] = clamp((State.save.friendship[o.id] || 0) + gain, 0, 1000);
+      State.sessionFriendshipGain[o.id] = (State.sessionFriendshipGain[o.id] || 0) + gain;
     }
   }
+
   const priceMap = { normal: 10, silver: 20, gold: 50, rare: 100 };
   State.sessionCoins = 0;
   for (const egg of State.collectedEggs) {
     State.sessionCoins += priceMap[egg.key] || 10;
   }
   State.save.coins += State.sessionCoins;
+  saveSlot(State.currentSlot);
   saveGame();
+
   if (perfect) {
     State.resultTitle = "今天的小鸡都吃饱啦";
     State.resultBody = `评分 ${State.resultGrade} · 用时 ${State.clearTime}s · 赚取 ${State.sessionCoins} 金币`;
@@ -205,6 +331,7 @@ function interact(tx, ty) {
       Audio.beep("hay");
     }
   } else if (obj.type === "egg") {
+    State.objects = State.objects.filter(o => o.id !== obj.id);
     obj.state = "collected";
     State.eggsCollected += 1;
     State.collectedEggs.push(obj.quality);
@@ -214,16 +341,22 @@ function interact(tx, ty) {
     Audio.beep("egg");
     vibrate(25);
   }
-  if (State.feedPlaced >= 3 && State.petsDone >= 3 && State.eggsCollected >= 2) {
+  const totalHay = State.objects.filter(o => o.type === "trough").length;
+  const totalChickens = State.objects.filter(o => o.type === "chicken").length;
+  const totalEggs = State.totalEggsAtStart;
+  if (State.feedPlaced >= totalHay && State.petsDone >= totalChickens && State.eggsCollected >= totalEggs) {
     setTimeout(() => endGame(false), 550);
   }
 }
 
 function checkMilestones() {
+  const totalHay = State.objects.filter(o => o.type === "trough").length;
+  const totalChickens = State.objects.filter(o => o.type === "chicken").length;
+  const totalEggs = State.totalEggsAtStart;
   const marks = [
-    ["fed", State.feedPlaced >= Config.tasks.hay, "三格食槽都放好啦"],
-    ["pet", State.petsDone >= Config.tasks.pets, "三只小鸡都开心啦"],
-    ["egg", State.eggsCollected >= Config.tasks.eggs, "今天的鸡蛋收齐啦"]
+    ["fed", State.feedPlaced >= totalHay, `所有食槽都放好啦`],
+    ["pet", State.petsDone >= totalChickens, `所有小鸡都开心啦`],
+    ["egg", State.eggsCollected >= totalEggs, `所有鸡蛋都收齐啦`]
   ];
   for (const [key, done, text] of marks) {
     if (done && !State.milestones[key]) {
@@ -276,5 +409,106 @@ function newGame() {
   State.save.hayStorage = 10;
   State.save.heatLamp = false;
   State.save.chickenHunger = {};
+  State.save.ownedChickens = {};
+  migrateLegacyData();
+  saveGame();
+}
+
+function buyChicken(tier) {
+  const tierInfo = CHICKEN_TIERS[tier];
+  if (!tierInfo) return;
+  if (State.save.coins < tierInfo.price) {
+    State.toast = "金币不足";
+    State.toastTimer = 1.2;
+    Audio.beep("miss");
+    return;
+  }
+  State.save.coins -= tierInfo.price;
+
+  const existingYaws = State.objects
+    .filter(o => o.type === "chicken")
+    .map(o => o.yaw);
+
+  let spawnYaw = 0;
+  if (existingYaws.length > 0) {
+    let maxGap = 0;
+    let bestYaw = 0;
+    for (let i = 0; i < existingYaws.length; i++) {
+      const nextYaw = existingYaws[(i + 1) % existingYaws.length];
+      let gap = Math.abs(normDeg(nextYaw - existingYaws[i]));
+      if (gap > maxGap) {
+        maxGap = gap;
+        bestYaw = normDeg(existingYaws[i] + gap / 2);
+      }
+    }
+    spawnYaw = bestYaw;
+  }
+
+  const count = Object.keys(State.save.ownedChickens).length + 1;
+  const newId = `chick_${Date.now()}`;
+  const name = tierInfo.name + count;
+
+  State.save.ownedChickens[newId] = {
+    tier,
+    name,
+    eggCooldown: 0,
+    consecutiveHungryDays: 0
+  };
+  State.save.friendship[newId] = 0;
+  State.save.chickenHunger[newId] = false;
+
+  State.objects.push({
+    id: newId,
+    type: "chicken",
+    label: name,
+    action: "摸摸",
+    yaw: spawnYaw,
+    baseYaw: spawnYaw,
+    pitch: -22 - Math.random() * 6,
+    angle: 17,
+    state: "idle",
+    color: tierInfo.color,
+    tier,
+    pet: false,
+    bob: Math.random() * Math.PI * 2,
+    wander: Math.random() * 5,
+    animState: "idle",
+    animFrame: 0,
+    animTimer: 0,
+    dirFrame: 0,
+    hungry: false
+  });
+
+  const troughCount = State.objects.filter(o => o.type === "trough").length;
+  const newTroughId = `trough_${Date.now()}`;
+  const troughYaw = spawnYaw + 35;
+  State.objects.push({
+    id: newTroughId,
+    type: "trough",
+    label: `食槽 ${troughCount + 1}`,
+    action: "放干草",
+    yaw: troughYaw,
+    pitch: -18,
+    angle: 13,
+    state: "empty"
+  });
+
+  saveGame();
+  State.toast = `新伙伴 ${name} 加入啦！`;
+  State.toastTimer = 2;
+  Audio.beep("win");
+}
+
+function removeDeadChicken(id) {
+  const chicken = State.objects.find(o => o.id === id);
+  if (chicken) {
+    State.toast = `${chicken.label} 饿死了...`;
+    State.toastTimer = 4;
+    Audio.beep("miss");
+    State.objects = State.objects.filter(o => o.id !== id);
+  }
+  delete State.save.ownedChickens[id];
+  delete State.save.friendship[id];
+  delete State.save.chickenHunger[id];
   saveGame();
 }

@@ -30,6 +30,36 @@ canvas {
   box-shadow: 0 22px 70px rgba(0, 0, 0, .45);
   touch-action: none;
 }
+#authUserInput, #authPassInput {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 70%;
+  height: 7%;
+  background: rgba(255, 235, 190, 0.12);
+  border: 2px solid rgba(252, 210, 100, 0.5);
+  border-radius: 12px;
+  color: #fff5d2;
+  font-size: clamp(14px, 3.8vw, 16px);
+  padding: 0 14px;
+  outline: none;
+  z-index: 9999;
+  transition: border-color 0.2s, background 0.2s;
+  box-sizing: border-box;
+}
+#authUserInput {
+  top: 23%;
+}
+#authPassInput {
+  top: 33%;
+}
+#authUserInput:focus, #authPassInput:focus {
+  border-color: rgba(252, 210, 100, 0.85);
+  background: rgba(255, 235, 190, 0.18);
+}
+#authUserInput::placeholder, #authPassInput::placeholder {
+  color: rgba(255, 235, 190, 0.35);
+}
 @media (max-width: 520px) {
   canvas { border-radius: 0; }
 }
