@@ -217,8 +217,23 @@
 
     const ScenePanoramas = {
       coop: {
+        path: "./assets/panoramas/coop-360.png",
         pathLarge: "./assets/panoramas/coop-360-4096.jpg",
         pathSmall: "./assets/panoramas/coop-360-2048.jpg",
+        radius: 34,
+        rotationY: 0
+      },
+      dock: {
+        path: "./assets/panoramas/dock-360.png",
+        pathLarge: "./assets/panoramas/dock-360-4096.jpg",
+        pathSmall: "./assets/panoramas/dock-360-2048.jpg",
+        radius: 34,
+        rotationY: 0
+      },
+      orchard: {
+        path: "./assets/panoramas/orchard-360.png",
+        pathLarge: "./assets/panoramas/orchard-360-4096.jpg",
+        pathSmall: "./assets/panoramas/orchard-360-2048.jpg",
         radius: 34,
         rotationY: 0
       }
@@ -749,18 +764,22 @@
             this.addRingProp(118, 7.8, 0.2, 0.9, 1.1, 0.9, 0x774732);
           }
         } else if (sceneId === "dock") {
-          const water = new THREE.Mesh(new THREE.CircleGeometry(18, 56), this.mat(0x4d90af, 0.45, 0.02));
-          water.rotation.x = -Math.PI / 2;
-          this.root.add(water);
-          const deck = new THREE.Mesh(new THREE.RingGeometry(1.9, 7.2, 32), this.mat(0x8b6442));
-          deck.rotation.x = -Math.PI / 2;
-          deck.position.y = 0.02;
-          this.root.add(deck);
+          if (!panorama) {
+            const water = new THREE.Mesh(new THREE.CircleGeometry(18, 56), this.mat(0x4d90af, 0.45, 0.02));
+            water.rotation.x = -Math.PI / 2;
+            this.root.add(water);
+            const deck = new THREE.Mesh(new THREE.RingGeometry(1.9, 7.2, 32), this.mat(0x8b6442));
+            deck.rotation.x = -Math.PI / 2;
+            deck.position.y = 0.02;
+            this.root.add(deck);
+          }
         } else if (sceneId === "orchard") {
-          const grass = new THREE.Mesh(new THREE.CircleGeometry(18, 48), this.mat(0x7aa858));
-          grass.rotation.x = -Math.PI / 2;
-          this.root.add(grass);
-          this.addRingProp(34, 12.5, 0, 0.9, 3.6, 0.9, 0xd6b07d);
+          if (!panorama) {
+            const grass = new THREE.Mesh(new THREE.CircleGeometry(18, 48), this.mat(0x7aa858));
+            grass.rotation.x = -Math.PI / 2;
+            this.root.add(grass);
+            this.addRingProp(34, 12.5, 0, 0.9, 3.6, 0.9, 0xd6b07d);
+          }
         } else if (sceneId === "market") {
           const ground = new THREE.Mesh(new THREE.CircleGeometry(16, 48), this.mat(0x6c4a43));
           ground.rotation.x = -Math.PI / 2;
