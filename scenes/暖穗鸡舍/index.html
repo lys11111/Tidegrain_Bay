@@ -66,7 +66,6 @@
     "use strict";
 
     const Config = {
-      version: "v2.1",
       W: 360,
       H: 640,
       fov: 98,
@@ -74,11 +73,16 @@
       staminaMax: 100,
       errorText: "哎呀，出错了，请重启试试吧~",
       storageKey: "tidegrain-bay-multi-scene-v1",
+      bgmPath: encodeURI("../../星露谷背景音.mp3"),
       input: {
         hoverEnterAngle: 12,
         hoverExitAngle: 9,
         hoverLockMs: 150,
         edgeHintAngle: 18,
+        tapAssistAngle: 15,
+        tapGuideBonus: 2.6,
+        guideNudgeDelay: 4.5,
+        guideEscalateDelay: 8,
         stationaryFrameCount: 18,
         fastTurnThreshold: 2.4,
         idleDeadzoneYaw: 0.7,
@@ -88,7 +92,7 @@
         idleSmoothing: 0.10,
         moveSmoothing: 0.18,
         fastTurnSmoothing: 0.32,
-        dragThresholdPx: 2,
+        dragThresholdPx: 4,
         dragYawScale: 0.32,
         dragPitchScale: 0.11
       },
@@ -97,10 +101,21 @@
 
     const SceneOrder = ["coop", "dock", "orchard", "market"];
     const SceneMeta = {
-      coop: { name: "暖穗鸡舍", en: "WarmSheaf Coop", core: "投喂、抚摸、拾蛋", color: "#efbd70", duration: 80 },
-      dock: { name: "听潮码头", en: "Tidewharf Dock", core: "听音、抛竿、拉扯", color: "#6dc5dd", duration: 82 },
-      orchard: { name: "风磨果园", en: "Windmill Orchard", core: "摇树、分拣、压榨", color: "#f29d63", duration: 80 },
-      market: { name: "暮灯集市", en: "Dusklantern Market", core: "浏览、交付、变现", color: "#c18dff", duration: 80 }
+      coop: { name: "暖穗鸡舍", en: "WarmSheaf Coop", core: "投喂、抚摸、拾蛋", color: "#efbd70", duration: 80, intro: "鸡舍总是醒得最早。先把干草放好，再和小鸡们打个招呼。", quote: "晨光落进鸡舍时，照料就是一天最稳的开始。" },
+      dock: { name: "听潮码头", en: "Tidewharf Dock", core: "听音、抛竿、拉扯", color: "#6dc5dd", duration: 82, intro: "海面把鱼群藏进了浪声里。跟着更近的水花，把这一杆抛准。", quote: "在穗潮湾，鱼有时先被听见，才会被看见。" },
+      orchard: { name: "风磨果园", en: "Windmill Orchard", core: "摇树、分拣、压榨", color: "#f29d63", duration: 80, intro: "风会替树把成熟交下来。你要做的，是分出最甜的一份。", quote: "果园教人的不是采摘，而是判断什么该留下、什么该变成香气。" },
+      market: { name: "暮灯集市", en: "Dusklantern Market", core: "浏览、交付、变现", color: "#c18dff", duration: 80, intro: "等灯火亮起，白天的劳动才真正有了回声。看看谁在等你的货。", quote: "夜市不只交换货物，也交换一天被看见的分量。" }
+    };
+
+    const MenuCopy = {
+      eyebrow: "一个关于照料、观察、收成与交换的小湾",
+      bodyLines: [
+        "潮水退去后，鸡舍、码头、果园和夜市会慢慢亮起来。",
+        "你在一天之内穿过四段日常，",
+        "把细小劳动变成看得见的回响。"
+      ],
+      quote: "潮水会退去，日子会留下。",
+      footer: "照料 · 观察 · 收获 · 交换"
     };
 
     const InventoryLabels = {
@@ -112,6 +127,26 @@
       jam: "果酱",
       honey: "蜂蜜"
     };
+
+    const CollectionKeys = ["egg", "silverEgg", "fish", "shell", "berry", "jam", "honey"];
+    const ProfileTitles = [
+      { id: "newcomer", name: "湾里新住民" },
+      { id: "coopkeeper", name: "鸡舍照料人" },
+      { id: "tidewatcher", name: "听潮采集者" },
+      { id: "lanterntrader", name: "暮灯货主" }
+    ];
+    const EventDefs = [
+      { id: "scene_coop", label: "完成过暖穗鸡舍" },
+      { id: "scene_dock", label: "完成过听潮码头" },
+      { id: "scene_orchard", label: "完成过风磨果园" },
+      { id: "scene_market", label: "完成过暮灯集市" },
+      { id: "silver_egg", label: "收过银星蛋" },
+      { id: "fish_catch", label: "钓到第一条鲜鱼" },
+      { id: "jam_crafted", label: "压出第一罐果酱" },
+      { id: "honey_taken", label: "收起第一份蜂蜜" },
+      { id: "order_done", label: "完成过订单交付" },
+      { id: "quick_sell", label: "完成过快速出售" }
+    ];
 
     const OrderDefs = [
       { id: "egg_pair", title: "早餐篮", needs: { egg: 2 }, gold: 90, rep: 1 },
@@ -161,6 +196,20 @@
     const canvas = document.getElementById("hudCanvas");
     const ctx = canvas.getContext("2d");
 
+    function createFlagMap(keys) {
+      const map = {};
+      keys.forEach((key) => { map[key] = false; });
+      return map;
+    }
+    function defaultStats() {
+      return {
+        totalGoldEarned: 0,
+        totalOrdersCompleted: 0,
+        totalQuickSales: 0,
+        totalSuccessfulScenes: 0
+      };
+    }
+
     function defaultSave() {
       return {
         day: 1,
@@ -168,6 +217,13 @@
         stamina: Config.staminaMax,
         rep: 0,
         weather: "晴",
+        settings: {
+          bgmPaused: false
+        },
+        profile: {
+          name: "新来的湾民",
+          titleId: "newcomer"
+        },
         friendship: { chickA: 0, chickB: 0, chickC: 0 },
         inventory: {
           egg: 0,
@@ -180,7 +236,10 @@
         },
         marketOrders: [],
         sceneBest: {},
-        sceneClears: {}
+        sceneClears: {},
+        collection: createFlagMap(CollectionKeys),
+        events: createFlagMap(EventDefs.map((def) => def.id)),
+        stats: defaultStats()
       };
     }
 
@@ -197,8 +256,11 @@
       edgeHintId: null,
       toast: "",
       toastTimer: 0,
+      toastType: "info",
       result: null,
       currentScene: null,
+      menuPanel: "",
+      lastProgressAt: 0,
       drag: { active: false, moved: false, canPan: false, x: 0, y: 0, yaw: 0, pitch: 0 },
       press: { down: false },
       orientation: { alpha: 0, beta: 0, gamma: 0, has: false },
@@ -215,12 +277,42 @@
 
     const Audio = {
       ctx: null,
+      bgm: null,
       ensure() {
         if (!this.ctx) {
           const AC = window.AudioContext || window.webkitAudioContext;
           if (AC) this.ctx = new AC();
         }
         if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+      },
+      ensureBgm() {
+        if (this.bgm) return this.bgm;
+        try {
+          const music = new window.Audio(Config.bgmPath);
+          music.loop = true;
+          music.preload = "auto";
+          music.volume = 0.42;
+          this.bgm = music;
+        } catch (_) {
+          this.bgm = null;
+        }
+        return this.bgm;
+      },
+      syncBgm() {
+        const music = this.ensureBgm();
+        if (!music || !State.save || !State.save.settings) return;
+        if (State.save.settings.bgmPaused) {
+          if (!music.paused) music.pause();
+          return;
+        }
+        const playPromise = music.play();
+        if (playPromise && typeof playPromise.catch === "function") playPromise.catch(() => {});
+      },
+      toggleBgm() {
+        if (!State.save || !State.save.settings) return;
+        State.save.settings.bgmPaused = !State.save.settings.bgmPaused;
+        saveGame();
+        this.syncBgm();
       },
       beep(type) {
         try {
@@ -870,19 +962,168 @@
       if (fill) ctx.fill();
       if (stroke) ctx.stroke();
     }
-    function setToast(text, time = 1.2) {
+    function nowMs() {
+      return typeof performance !== "undefined" ? performance.now() : Date.now();
+    }
+    function markProgress() {
+      State.lastProgressAt = nowMs();
+    }
+    function hasGuideBoost(sceneId) {
+      return (State.save.sceneClears[sceneId] || 0) < 3;
+    }
+    function getGuideAssistLevel(scene) {
+      if (!scene) return 0;
+      if (hasGuideBoost(scene.id)) return 2;
+      const idle = (nowMs() - State.lastProgressAt) / 1000;
+      if (idle >= Config.input.guideEscalateDelay) return 2;
+      if (idle >= Config.input.guideNudgeDelay) return 1;
+      return 0;
+    }
+    function getToastPalette(type) {
+      const map = {
+        info: { bg: "rgba(49, 32, 25, 0.84)", accent: "#f6d38d", text: "#fff5d2" },
+        pickup: { bg: "rgba(83, 57, 34, 0.88)", accent: "#ffd977", text: "#fff4d2" },
+        place: { bg: "rgba(77, 54, 33, 0.88)", accent: "#ffe08f", text: "#fff4d2" },
+        good: { bg: "rgba(34, 67, 46, 0.88)", accent: "#7be0a0", text: "#eefdef" },
+        warn: { bg: "rgba(89, 59, 29, 0.9)", accent: "#ffc678", text: "#fff3d8" },
+        miss: { bg: "rgba(95, 44, 39, 0.9)", accent: "#ff9f92", text: "#fff0eb" }
+      };
+      return map[type] || map.info;
+    }
+    function getStatusPalette(status) {
+      const map = {
+        ready: { stroke: "#ffe8a4", fill: "#fff7d4", text: "#563a21", glow: "rgba(255,232,159,0.92)" },
+        done: { stroke: "#8ddcaa", fill: "#effbf2", text: "#22452d", glow: "rgba(141,220,170,0.92)" },
+        blocked: { stroke: "#ffb196", fill: "#fff0e8", text: "#5f332a", glow: "rgba(255,177,150,0.92)" },
+        warn: { stroke: "#ffd07a", fill: "#fff4d8", text: "#5c4322", glow: "rgba(255,208,122,0.92)" },
+        hint: { stroke: "#f5df98", fill: "#fff7db", text: "#5f4525", glow: "rgba(245,223,152,0.88)" },
+        idle: { stroke: "rgba(255,255,255,0.74)", fill: "rgba(255,255,255,0.42)", text: "#fff5d2", glow: "rgba(255,255,255,0.58)" }
+      };
+      return map[status] || map.idle;
+    }
+    function getModeLabel() {
+      if (State.desktopSim) return "拖动视角";
+      return State.sensorMode === "hybrid" ? "陀螺仪 + 微调" : "拖动视角";
+    }
+    function guessToastType(text) {
+      if (!text) return "info";
+      if (/不够|不太对|没有|缺少|挣脱|错过|靠近|换个方向|先去|先捡|先看/.test(text)) return "warn";
+      if (/手持|拿起|捡起|收起|鱼漂动了|起钩/.test(text)) return "pickup";
+      if (/放好|放进|甩出去|打开|收过了|入筐/.test(text)) return "place";
+      if (/成功|完成|收好|已交付|赚到|提升|得到|开始了/.test(text)) return "good";
+      return "info";
+    }
+    function setToast(text, time = 1.2, type = "info") {
+      if (type === "info") type = guessToastType(text);
       State.toast = text;
       State.toastTimer = time;
+      State.toastType = type;
+      if (type === "info" || type === "pickup" || type === "place" || type === "good") markProgress();
+    }
+
+    function mergeFlagMap(keys, parsed) {
+      const merged = createFlagMap(keys);
+      if (!parsed || typeof parsed !== "object") return merged;
+      keys.forEach((key) => {
+        if (parsed[key]) merged[key] = true;
+      });
+      return merged;
+    }
+    function getProfileTitleById(id) {
+      return ProfileTitles.find((title) => title.id === id) || ProfileTitles[0];
+    }
+    function getPlayerTitle() {
+      return getProfileTitleById(State.save.profile && State.save.profile.titleId);
+    }
+    function getOwnedAssetKeys() {
+      return CollectionKeys.filter((key) => (State.save.inventory[key] || 0) > 0);
+    }
+    function getCollectedAssetKeys() {
+      return CollectionKeys.filter((key) => State.save.collection[key]);
+    }
+    function countCompletedEvents() {
+      return EventDefs.filter((def) => State.save.events[def.id]).length;
+    }
+    function countSceneClearsTotal() {
+      return SceneOrder.reduce((sum, id) => sum + (State.save.sceneClears[id] || 0), 0);
+    }
+    function countUniqueSceneClears() {
+      return SceneOrder.filter((id) => (State.save.sceneClears[id] || 0) > 0).length;
+    }
+    function summarizeAssetLabels(keys, emptyText) {
+      if (!keys.length) return emptyText;
+      const labels = keys.slice(0, 4).map((key) => InventoryLabels[key]);
+      return keys.length > 4 ? `${labels.join(" · ")} 等 ${keys.length}种` : labels.join(" · ");
+    }
+    function markCollection(key) {
+      if (Object.prototype.hasOwnProperty.call(State.save.collection, key)) State.save.collection[key] = true;
+    }
+    function markEvent(id) {
+      if (Object.prototype.hasOwnProperty.call(State.save.events, id)) State.save.events[id] = true;
+    }
+    function trackGoldEarned(amount) {
+      State.save.stats.totalGoldEarned += amount;
+    }
+    function backfillProgress(save, parsed) {
+      CollectionKeys.forEach((key) => {
+        if ((save.inventory[key] || 0) > 0) save.collection[key] = true;
+      });
+      if ((save.sceneClears.coop || 0) > 0) {
+        save.collection.egg = true;
+        save.events.scene_coop = true;
+      }
+      if ((save.sceneClears.dock || 0) > 0) {
+        save.collection.fish = true;
+        save.events.scene_dock = true;
+        save.events.fish_catch = true;
+      }
+      if ((save.sceneClears.orchard || 0) > 0) {
+        save.collection.berry = true;
+        save.collection.jam = true;
+        save.collection.honey = true;
+        save.events.scene_orchard = true;
+        save.events.jam_crafted = true;
+        save.events.honey_taken = true;
+      }
+      if ((save.sceneClears.market || 0) > 0) save.events.scene_market = true;
+      if ((save.inventory.silverEgg || 0) > 0) {
+        save.collection.silverEgg = true;
+        save.events.silver_egg = true;
+      }
+      if (save.rep > 0) {
+        save.events.order_done = true;
+        save.stats.totalOrdersCompleted = Math.max(save.stats.totalOrdersCompleted || 0, 1);
+      }
+      if (!(parsed && parsed.stats && Number.isFinite(parsed.stats.totalGoldEarned))) {
+        save.stats.totalGoldEarned = Math.max(0, (save.gold || 0) - 120);
+      }
+      save.stats.totalSuccessfulScenes = Math.max(save.stats.totalSuccessfulScenes || 0, countSceneClearsTotalFromSave(save));
+    }
+    function countSceneClearsTotalFromSave(save) {
+      return SceneOrder.reduce((sum, id) => sum + (save.sceneClears[id] || 0), 0);
     }
 
     function normalizeSave(parsed) {
       const base = defaultSave();
-      const save = Object.assign(base, parsed || {});
-      save.friendship = Object.assign(base.friendship, parsed && parsed.friendship ? parsed.friendship : {});
-      save.inventory = Object.assign(base.inventory, parsed && parsed.inventory ? parsed.inventory : {});
+      const save = Object.assign({}, base, parsed || {});
+      save.settings = Object.assign({}, base.settings, parsed && parsed.settings ? parsed.settings : {});
+      save.settings.bgmPaused = !!save.settings.bgmPaused;
+      save.profile = Object.assign({}, base.profile, parsed && parsed.profile ? parsed.profile : {});
+      if (!save.profile.name) save.profile.name = base.profile.name;
+      if (!ProfileTitles.some((title) => title.id === save.profile.titleId)) save.profile.titleId = base.profile.titleId;
+      save.friendship = Object.assign({}, base.friendship, parsed && parsed.friendship ? parsed.friendship : {});
+      save.inventory = Object.assign({}, base.inventory, parsed && parsed.inventory ? parsed.inventory : {});
       save.sceneBest = filterSceneStats(parsed && parsed.sceneBest);
       save.sceneClears = filterSceneStats(parsed && parsed.sceneClears);
       save.marketOrders = normalizeOrders(parsed && parsed.marketOrders);
+      save.collection = mergeFlagMap(CollectionKeys, parsed && parsed.collection);
+      save.events = mergeFlagMap(EventDefs.map((def) => def.id), parsed && parsed.events);
+      save.stats = Object.assign({}, base.stats, parsed && parsed.stats ? parsed.stats : {});
+      save.stats.totalGoldEarned = Math.max(0, Number(save.stats.totalGoldEarned) || 0);
+      save.stats.totalOrdersCompleted = Math.max(0, Number(save.stats.totalOrdersCompleted) || 0);
+      save.stats.totalQuickSales = Math.max(0, Number(save.stats.totalQuickSales) || 0);
+      save.stats.totalSuccessfulScenes = Math.max(0, Number(save.stats.totalSuccessfulScenes) || 0);
+      backfillProgress(save, parsed);
       return save;
     }
 
@@ -941,6 +1182,13 @@
 
     function addInventory(key, amount) {
       State.save.inventory[key] = (State.save.inventory[key] || 0) + amount;
+      if (amount > 0) {
+        markCollection(key);
+        if (key === "silverEgg") markEvent("silver_egg");
+        if (key === "fish") markEvent("fish_catch");
+        if (key === "jam") markEvent("jam_crafted");
+        if (key === "honey") markEvent("honey_taken");
+      }
     }
     function hasInventory(need) {
       for (const [key, amount] of Object.entries(need)) {
@@ -1030,7 +1278,155 @@
         fruit: 30
       };
       const radius = (base[obj.kind] || 32) * (projection ? clamp(projection.scale, 0.72, 1.42) : 1);
-      return radius;
+      const guideMul = obj.id === getGuideTargetId() ? 1.1 : 1;
+      const freshMul = State.currentScene && hasGuideBoost(State.currentScene.id) ? 1.12 : 1;
+      return radius * guideMul * freshMul;
+    }
+    function inventoryHasAny(keys) {
+      return keys.some((key) => (State.save.inventory[key] || 0) > 0);
+    }
+    function describeSceneObject(scene, obj) {
+      if (!scene || !obj) return { state: "idle", title: "观察场景", detail: "慢慢移动视角，对准高亮目标" };
+      const d = scene.data || {};
+      if (scene.id === "coop") {
+        if (obj.kind === "hopper") {
+          return d.holding === "hay"
+            ? { state: "done", title: "已经拿到干草", detail: "去把它放进空食槽" }
+            : { state: "ready", title: "拿一捆干草", detail: "先补满三个空食槽" };
+        }
+        if (obj.kind === "trough") {
+          if (obj.filled) return { state: "done", title: "这个食槽已经放好", detail: "去找下一个目标" };
+          return d.holding === "hay"
+            ? { state: "ready", title: "把干草放进去", detail: "放好后会立刻计入进度" }
+            : { state: "blocked", title: "先去料斗拿干草", detail: "拿一捆回来再补食槽" };
+        }
+        if (obj.kind === "chicken") {
+          return obj.pet
+            ? { state: "done", title: `${obj.label} 今天摸过了`, detail: "去找还没安抚的小鸡" }
+            : { state: "ready", title: `摸摸 ${obj.label}`, detail: "抚摸会提升今日好感" };
+        }
+        if (obj.kind === "egg") {
+          return obj.collected
+            ? { state: "done", title: "这颗鸡蛋已经收好了", detail: "看看地上还有没有漏掉的" }
+            : { state: "ready", title: "拾起鸡蛋", detail: "可以带去集市出售或交订单" };
+        }
+      }
+      if (scene.id === "dock") {
+        if (d.phase === "fight") return { state: "ready", title: "稳住捕获框", detail: "按住上移，松开就会下落" };
+        if (obj.kind === "spot") {
+          if (d.phase === "wait" && obj.id === d.castId) return { state: "blocked", title: "等鱼咬钩", detail: "看到鱼漂动起来再立刻点" };
+          if (d.phase === "bite" && obj.id === d.activeId) return { state: "ready", title: "现在立刻起钩", detail: "就是这一瞬间，别让鱼跑掉" };
+          if (obj.id !== d.activeId) return { state: "warn", title: "这边鱼情不太对", detail: "跟着更密的水花和海声找位置" };
+          return { state: "ready", title: "把鱼线抛到这里", detail: "对准活跃水花，准备钓这一条" };
+        }
+      }
+      if (scene.id === "orchard") {
+        if (obj.kind === "tree") {
+          return obj.shaken
+            ? { state: "done", title: "这棵树已经摇过了", detail: "去捡落下来的果子" }
+            : { state: "ready", title: "摇一摇果树", detail: "先把果子从树上打下来" };
+        }
+        if (obj.kind === "fruit") {
+          return { state: "ready", title: obj.fruitType === "good" ? "捡起完好果" : "捡起加工果", detail: obj.fruitType === "good" ? "完好果送去果筐" : "加工果拿去压榨台" };
+        }
+        if (obj.kind === "hive") {
+          return obj.taken
+            ? { state: "done", title: "这箱蜂蜜收过了", detail: "看看别的目标是否完成" }
+            : { state: "ready", title: "收起蜂蜜", detail: "今天这份蜂蜜可以直接带走" };
+        }
+        if (obj.kind === "crateGood") {
+          if (d.holding === "good") return { state: "ready", title: "把好果放进果筐", detail: "鲜果会进入今日收获" };
+          if (d.holding === "process") return { state: "warn", title: "手里这颗更适合压榨", detail: "把加工果送去另一边的压榨台" };
+          return { state: "blocked", title: "先捡起一颗完好果", detail: "地上成熟的好果要先分类入筐" };
+        }
+        if (obj.kind === "press") {
+          if (d.holding === "process") return { state: "ready", title: "把加工果放进压榨台", detail: "压榨后会得到一罐果酱" };
+          if (d.holding === "good") return { state: "warn", title: "这颗更适合直接入筐", detail: "完好果应该送到果筐那边" };
+          return { state: "blocked", title: "先捡起加工果", detail: "有瑕疵的果子适合做成果酱" };
+        }
+      }
+      if (scene.id === "market") {
+        if (obj.id === "board") {
+          return d.panel
+            ? { state: "done", title: "订单板已经打开", detail: "看看缺什么，再去对应摊位处理" }
+            : { state: "ready", title: "查看今日订单", detail: "先看缺口，再决定交付还是快卖" };
+        }
+        if (obj.id === "stallGrocer") {
+          return inventoryHasAny(["egg", "berry"])
+            ? { state: "ready", title: "把农货快速卖出", detail: "鸡蛋和鲜果都能在这里变现" }
+            : { state: "blocked", title: "背包里还没有农货", detail: "先去鸡舍或果园收点货回来" };
+        }
+        if (obj.id === "stallFish") {
+          return inventoryHasAny(["fish", "shell"])
+            ? { state: "ready", title: "把海货快速卖出", detail: "鲜鱼和贝壳都能在鱼摊变现" }
+            : { state: "blocked", title: "背包里还没有海货", detail: "先去码头钓到鱼再回来" };
+        }
+        if (obj.id === "stallCraft") {
+          return inventoryHasAny(["silverEgg", "jam", "honey"])
+            ? { state: "ready", title: "把手作品卖个好价", detail: "银星蛋、果酱和蜂蜜都适合这里" }
+            : { state: "blocked", title: "还没有可卖的手作品", detail: "试试带着果酱、蜂蜜或银星蛋过来" };
+        }
+      }
+      return { state: "ready", title: obj.action || "交互", detail: obj.label || "" };
+    }
+    function getFocusedStatus() {
+      const scene = State.currentScene;
+      if (!scene) return { state: "idle", title: "观察场景", detail: "" };
+      const hover = State.hoverId ? getSceneObjects().find((obj) => obj.id === State.hoverId) : null;
+      if (hover) return describeSceneObject(scene, hover);
+      if (State.edgeHintId) return { state: "hint", title: "目标在视野边缘", detail: "跟着箭头把目标拉回屏幕中央" };
+      return getGuideAssistLevel(scene) > 0
+        ? { state: "hint", title: "慢慢转动视角", detail: "把准星对准高亮目标再点击" }
+        : { state: "idle", title: "观察场景", detail: "" };
+    }
+    function getSceneTaskCards(scene) {
+      if (!scene) return [];
+      if (scene.id === "coop") {
+        return [
+          { tag: "喂", label: "干草", value: `${scene.data.feedPlaced}/3`, done: scene.data.feedPlaced >= 3, tone: "#efc66e" },
+          { tag: "摸", label: "安抚", value: `${scene.data.petsDone}/3`, done: scene.data.petsDone >= 3, tone: "#f1a5bc" },
+          { tag: "蛋", label: "收蛋", value: `${scene.data.eggsCollected}/2`, done: scene.data.eggsCollected >= 2, tone: "#ffe29f" }
+        ];
+      }
+      if (scene.id === "dock") {
+        const phaseLabel = scene.data.phase === "search" ? "搜寻中" : scene.data.phase === "bite" ? "起钩" : scene.data.phase === "fight" ? "拉扯中" : "等待中";
+        return [
+          { tag: "听", label: "鱼情", value: phaseLabel, done: scene.data.phase !== "search", tone: "#8bcfe0" },
+          { tag: "稳", label: "手感", value: scene.data.phase === "fight" ? `${Math.round(scene.data.progress)}%` : "准备", done: scene.data.phase === "fight" && scene.data.progress >= 80, tone: "#8ce0be" },
+          { tag: "鱼", label: "渔获", value: `${scene.data.catches}/2`, done: scene.data.catches >= 2, tone: "#d3f1ff" }
+        ];
+      }
+      if (scene.id === "orchard") {
+        return [
+          { tag: "果", label: "好果", value: `${scene.data.sorted}/2`, done: scene.data.sorted >= 2, tone: "#f0b56e" },
+          { tag: "酱", label: "压榨", value: `${scene.data.jamDone}/1`, done: scene.data.jamDone >= 1, tone: "#d78e6d" },
+          { tag: "蜜", label: "蜂蜜", value: `${scene.data.honey ? 1 : 0}/1`, done: !!scene.data.honey, tone: "#f5d66b" }
+        ];
+      }
+      const doneOrders = State.save.marketOrders.filter((order) => order.done).length;
+      return [
+        { tag: "单", label: "订单", value: `${doneOrders}/3`, done: doneOrders >= 2, tone: "#c7a3ff" },
+        { tag: "售", label: "成交", value: `${scene.data.actions}/2`, done: scene.data.actions >= 2, tone: "#9dc7ff" },
+        { tag: "金", label: "收益", value: `${scene.data.earned}G`, done: scene.data.earned >= 120, tone: "#ffd77c" }
+      ];
+    }
+    function getTapAssistTarget() {
+      const hover = findHover();
+      if (hover) return hover;
+      const guideId = getGuideTargetId();
+      let best = null;
+      let bestScore = Infinity;
+      for (const obj of getSceneObjects()) {
+        if (!isInteractable(obj)) continue;
+        const lookDist = getLookDistance(obj);
+        if (lookDist > Config.input.tapAssistAngle) continue;
+        const score = lookDist - (obj.id === guideId ? Config.input.tapGuideBonus : 0);
+        if (score < bestScore) {
+          best = obj;
+          bestScore = score;
+        }
+      }
+      return best;
     }
     function project(obj) {
       if (World.ready && State.screen === "playing") {
@@ -1211,6 +1607,7 @@
     async function requestMotionAndOpenHub() {
       try {
         Audio.ensure();
+        State.menuPanel = "";
         State.permissionAsked = true;
         const DOE = window.DeviceOrientationEvent;
         if (DOE && typeof DOE.requestPermission === "function") {
@@ -1242,6 +1639,7 @@
     }
 
     function openHubDesktop() {
+      State.menuPanel = "";
       State.sensorMode = "drag";
       State.sensorReady = false;
       State.desktopSim = true;
@@ -1333,7 +1731,7 @@
       State.needsCalibration = State.sensorReady && !State.desktopSim;
       calibrate();
       if (World.ready) World.loadScene(State.currentScene);
-      setToast(`${SceneMeta[id].name} · ${SceneMeta[id].core}`, 2.1);
+      setToast(SceneMeta[id].intro || `${SceneMeta[id].name} · ${SceneMeta[id].core}`, 2.2);
     }
 
     function leaveScene() {
@@ -1353,6 +1751,10 @@
       const usedTime = Math.max(0, Math.round(SceneMeta[id].duration - State.currentScene.timer));
       const best = State.save.sceneBest[id];
       if (success && (!best || usedTime < best)) State.save.sceneBest[id] = usedTime;
+      if (success) {
+        State.save.stats.totalSuccessfulScenes += 1;
+        markEvent(`scene_${id}`);
+      }
       saveGame();
       State.result = {
         id,
@@ -1469,28 +1871,28 @@
       const scene = State.currentScene;
       if (!scene) return null;
       if (scene.id === "coop") {
-        if (scene.data.holding !== "hay" && scene.objects.some(o => o.kind === "trough" && !o.filled)) return { obj: scene.objects.find(o => o.id === "hopper"), text: "先从料斗拿一束干草" };
-        if (scene.data.holding === "hay") return { obj: scene.objects.find(o => o.kind === "trough" && !o.filled), text: "把干草放进空食槽" };
-        const unpet = scene.objects.find(o => o.kind === "chicken" && !o.pet);
-        if (unpet) return { obj: unpet, text: `找到 ${unpet.label}，摸摸它` };
-        return { obj: scene.objects.find(o => o.kind === "egg" && !o.collected), text: "地上还有鸡蛋没捡" };
+        if (scene.data.holding !== "hay" && scene.objects.some((o) => o.kind === "trough" && !o.filled)) return { obj: scene.objects.find((o) => o.id === "hopper"), text: "先去料斗拿一捆干草", detail: "拿到手后，再回头补空着的食槽" };
+        if (scene.data.holding === "hay") return { obj: scene.objects.find((o) => o.kind === "trough" && !o.filled), text: "把干草放进空食槽", detail: "放好一槽就会立刻推进今日进度" };
+        const unpet = scene.objects.find((o) => o.kind === "chicken" && !o.pet);
+        if (unpet) return { obj: unpet, text: `找到 ${unpet.label}，摸摸它`, detail: "抚摸会补上今天的安抚进度和好感" };
+        return { obj: scene.objects.find((o) => o.kind === "egg" && !o.collected), text: "地上还有鸡蛋没捡", detail: "鸡蛋能带去集市卖掉或交订单" };
       }
       if (scene.id === "dock") {
-        const active = scene.objects.find(o => o.id === scene.data.activeId);
-        if (scene.data.phase === "search") return { obj: active, text: "跟着咕噜声，把视角对准水花抛竿" };
-        if (scene.data.phase === "bite") return { obj: active, text: "鱼漂沉了，马上点一下起钩" };
-        return { obj: active, text: "按住屏幕让绿色捕获框追住鱼标" };
+        const active = scene.objects.find((o) => o.id === scene.data.activeId);
+        if (scene.data.phase === "search") return { obj: active, text: "跟着水花和海声，把视角对准鱼位", detail: "声音更近、水花更密的位置，就是这一轮的目标点" };
+        if (scene.data.phase === "bite") return { obj: active, text: "鱼漂沉了，马上点一下起钩", detail: "这一下要快，错过就会脱钩" };
+        return { obj: active, text: "按住屏幕稳住绿色捕获框", detail: "让绿框尽量包住鱼标，进度才会持续上涨" };
       }
       if (scene.id === "orchard") {
-        const tree = scene.objects.find(o => o.kind === "tree" && !o.shaken);
-        if (tree) return { obj: tree, text: "先摇树，把果子打下来" };
-        if (!scene.data.holding) return { obj: scene.objects.find(o => o.kind === "fruit" && !o.collected), text: "捡起地上的果子" };
-        if (scene.data.holding === "good") return { obj: scene.objects.find(o => o.id === "crate"), text: "把完好果放进果筐" };
-        return { obj: scene.objects.find(o => o.id === "press"), text: "把加工果放进压榨桶" };
+        const tree = scene.objects.find((o) => o.kind === "tree" && !o.shaken);
+        if (tree) return { obj: tree, text: "先摇树，把果子打下来", detail: "树不摇，后面的分类和压榨就没法开始" };
+        if (!scene.data.holding) return { obj: scene.objects.find((o) => o.kind === "fruit" && !o.collected), text: "捡起地上的果子", detail: "完好果入筐，加工果送去压榨台" };
+        if (scene.data.holding === "good") return { obj: scene.objects.find((o) => o.id === "crate"), text: "把完好果放进果筐", detail: "鲜果直接算作今天可出售的收成" };
+        return { obj: scene.objects.find((o) => o.id === "press"), text: "把加工果放进压榨台", detail: "压榨完成后会得到一罐果酱" };
       }
       if (scene.id === "market") {
         if (scene.data.panel) return null;
-        return { obj: scene.objects.find(o => o.id === "board"), text: "先看订单板，或者去摊位快速出售" };
+        return { obj: scene.objects.find((o) => o.id === "board"), text: "先看订单板，再决定去哪一摊处理货物", detail: "订单优先赚声望，快卖更适合立刻变现" };
       }
       return null;
     }
@@ -1498,7 +1900,8 @@
     function interactSceneObject(obj) {
       const scene = State.currentScene;
       if (!scene || !obj) {
-        setToast("再靠近一点点", 0.9);
+        const guide = getSceneHint();
+        setToast(guide && guide.text ? guide.text : "再靠近一点点", 1, "warn");
         Audio.beep("miss");
         return;
       }
@@ -1687,8 +2090,11 @@
       removeInventory({ [found]: 1 });
       const price = getSellPrice(found);
       State.save.gold += price;
+      State.save.stats.totalQuickSales += 1;
       scene.data.actions += 1;
       scene.data.earned += price;
+      trackGoldEarned(price);
+      markEvent("quick_sell");
       addFloater(`+${price}G`, Config.W * 0.74, 126, "#ffe593");
       setToast(`${label}：${InventoryLabels[found]} +${price}G`, 1.2);
       Audio.beep("coin");
@@ -1733,8 +2139,11 @@
               order.done = true;
               State.save.gold += order.gold;
               State.save.rep += order.rep;
+              State.save.stats.totalOrdersCompleted += 1;
               scene.data.actions += 1;
               scene.data.earned += order.gold;
+              trackGoldEarned(order.gold);
+              markEvent("order_done");
               addFloater(`+${order.gold}G`, 286, 128, "#ffe593");
               setToast(`${order.title} 已交付`, 1.1);
               Audio.beep("coin");
@@ -2315,51 +2724,75 @@
       ctx.stroke();
     }
     function drawObjectLabel(obj) {
-      ctx.fillStyle = "rgba(55,34,25,0.78)";
-      const w = obj.kind === "chicken" ? 120 : 90;
-      roundRect(-w / 2, -58, w, obj.kind === "chicken" ? 36 : 22, 8, true);
-      safeText(obj.action, 0, obj.kind === "chicken" ? -49 : -47, 12, "#fff5d2");
-      if (obj.kind === "chicken") safeText(`${obj.label} ${heartsFromFriendship(getFriendship(obj.id))}/5心`, 0, -33, 10, "#ffe4a8");
+      const meta = describeSceneObject(State.currentScene, obj);
+      const palette = getStatusPalette(meta.state);
+      const extra = obj.kind === "chicken"
+        ? `${obj.label} ${heartsFromFriendship(getFriendship(obj.id))}/5心`
+        : meta.state !== "ready" && meta.detail ? meta.detail : "";
+      const width = extra ? 156 : 128;
+      const height = extra ? 38 : 24;
+      ctx.fillStyle = "rgba(47, 31, 24, 0.84)";
+      roundRect(-width / 2, -60, width, height, 10, true);
+      safeText(meta.title || obj.action, 0, extra ? -48 : -47, 12, palette.stroke);
+      if (extra) safeText(extra, 0, -32, 10, "#ffe5b7");
     }
 
     function drawCrosshair() {
       ctx.save();
       ctx.translate(Config.W / 2, Config.H / 2);
+      const focus = getFocusedStatus();
+      const key = State.hoverId ? focus.state : State.edgeHintId ? "hint" : "idle";
+      const palette = getStatusPalette(key);
       const pulse = 0.5 + Math.sin(performance.now() * 0.01) * 0.12;
-      ctx.strokeStyle = State.hoverId ? "#fff1a2" : State.edgeHintId ? `rgba(255,241,162,${0.58 + pulse * 0.18})` : "rgba(255,255,255,0.74)";
-      ctx.lineWidth = 2;
+      const radius = State.hoverId ? 11 : key === "hint" ? 10 : 9;
+      ctx.strokeStyle = key === "idle" ? palette.stroke : palette.glow;
+      ctx.lineWidth = State.hoverId ? 2.5 : 2;
       ctx.beginPath();
-      ctx.arc(0, 0, 9, 0, Math.PI * 2);
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
       ctx.moveTo(-16, 0); ctx.lineTo(-7, 0);
       ctx.moveTo(7, 0); ctx.lineTo(16, 0);
       ctx.moveTo(0, -16); ctx.lineTo(0, -7);
       ctx.moveTo(0, 7); ctx.lineTo(0, 16);
       ctx.stroke();
-      ctx.fillStyle = State.hoverId ? "#fff6cf" : "rgba(255,255,255,0.42)";
+      ctx.fillStyle = key === "idle" ? palette.fill : `rgba(255,255,255,${0.42 + pulse * 0.12})`;
       ctx.beginPath();
-      ctx.arc(0, 0, 2, 0, Math.PI * 2);
+      ctx.arc(0, 0, State.hoverId ? 2.8 : 2.2, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
 
-    function drawHud() {
-      const scene = State.currentScene;
-      ctx.fillStyle = "rgba(43, 31, 26, 0.74)";
-      roundRect(10, 10, 340, 60, 12, true);
-      safeText(scene.meta.name, 28, 27, 13, "#fff3d3", "left");
-      safeText(scene.meta.en, 28, 49, 11, "#dfc594", "left");
-      safeText(`Day ${State.save.day}`, 220, 27, 12, "#fff1cc");
-      safeText(`${Math.ceil(scene.timer)}s`, 318, 27, 18, scene.timer <= 12 ? "#ffba9d" : "#fff3d3");
-      safeText(`${State.save.weather} · ${State.save.stamina}体力`, 258, 49, 11, "#ffe4a5");
-      safeText(Config.version, 322, 49, 11, "#d4bf91");
-      drawSceneProgress();
-      drawModeBadge();
-      drawHoldingBadge();
-      drawCrosshair();
-      drawObjectiveGuide();
-      drawButton("地图", 16, 584, 64, 34);
-      drawButton("居中", 90, 584, 64, 34);
-      drawButton(State.desktopSim ? "电脑测试" : State.sensorMode === "hybrid" ? "陀螺仪+微调" : "拖动", 202, 584, 142, 34);
+    function drawTopBar(scene) {
+      const staminaRatio = clamp(State.save.stamina / Config.staminaMax, 0, 1);
+      ctx.fillStyle = "rgba(39, 29, 24, 0.78)";
+      roundRect(12, 10, 336, 58, 14, true);
+      safeText(scene.meta.name, 28, 28, 15, "#fff3d3", "left");
+      safeText(`Day ${State.save.day} · ${State.save.weather}`, 28, 49, 11, "#e8cc98", "left");
+      ctx.fillStyle = "rgba(255, 243, 210, 0.1)";
+      roundRect(260, 15, 76, 20, 10, true);
+      safeText(`${Math.ceil(scene.timer)}s`, 298, 25, 12, scene.timer <= 12 ? "#ffb59b" : "#fff3d3");
+      safeText(`体力 ${State.save.stamina}`, 288, 47, 11, "#fff0c8");
+      ctx.fillStyle = "rgba(255,255,255,0.12)";
+      roundRect(240, 56, 96, 4, 2, true);
+      ctx.fillStyle = staminaRatio > 0.32 ? "#8bd9a4" : staminaRatio > 0.15 ? "#f0c36b" : "#ff9f88";
+      roundRect(240, 56, 96 * staminaRatio, 4, 2, true);
+    }
+
+    function drawTaskStrip(scene) {
+      const cards = getSceneTaskCards(scene);
+      const y = 78;
+      const w = 102;
+      const h = 40;
+      const gap = 9;
+      cards.forEach((card, index) => {
+        const x = 18 + index * (w + gap);
+        ctx.fillStyle = card.done ? "rgba(85, 122, 94, 0.82)" : "rgba(42, 31, 26, 0.66)";
+        roundRect(x, y, w, h, 12, true);
+        ctx.fillStyle = card.done ? "rgba(225, 255, 233, 0.2)" : card.tone;
+        roundRect(x + 8, y + 8, 22, 22, 8, true);
+        safeText(card.tag, x + 19, y + 19, 11, card.done ? "#245033" : "#4a3321");
+        safeText(card.label, x + 38, y + 15, 10, "#e6c99b", "left");
+        safeText(card.value, x + w - 12, y + 24, 12, card.done ? "#ddffde" : "#fff1cc", "right");
+      });
     }
 
     function drawHoldingBadge() {
@@ -2369,51 +2802,68 @@
       if (scene.id === "coop") text = scene.data.holding === "hay" ? "手持干草" : "";
       if (scene.id === "orchard") text = scene.data.holding === "good" ? "手持完好果" : scene.data.holding === "process" ? "手持加工果" : "";
       if (!text) return;
-      ctx.fillStyle = "rgba(255, 232, 159, 0.92)";
-      roundRect(228, 538, 114, 34, 11, true);
-      safeText(text, 285, 555, 13, "#6b4328");
+      ctx.fillStyle = "rgba(255, 232, 159, 0.94)";
+      roundRect(214, 540, 128, 30, 10, true);
+      safeText(text, 278, 555, 12, "#674325");
     }
 
-    function drawSceneProgress() {
+    function drawModeChip() {
+      const label = getModeLabel();
+      ctx.fillStyle = "rgba(255, 239, 196, 0.15)";
+      roundRect(172, 584, 172, 36, 12, true);
+      safeText(label, 186, 603, 11, "#ffe5ae", "left");
+      ctx.fillStyle = State.motion.isStationary ? "rgba(141, 211, 156, 0.96)" : "rgba(255, 203, 124, 0.96)";
+      roundRect(312, 593, 20, 18, 7, true);
+      safeText(State.motion.isStationary ? "稳" : "动", 322, 602, 10, "#4b2f1e");
+    }
+
+    function drawBottomControls() {
+      drawButton("地图", 16, 584, 70, 36);
+      drawButton("居中", 94, 584, 70, 36);
+      drawModeChip();
+    }
+
+    function drawHud() {
       const scene = State.currentScene;
-      ctx.fillStyle = "rgba(43, 31, 26, 0.62)";
-      roundRect(18, 80, 324, 30, 11, true);
-      let text = "";
-      if (scene.id === "coop") text = `干草 ${scene.data.feedPlaced}/3 · 摸摸 ${scene.data.petsDone}/3 · 鸡蛋 ${scene.data.eggsCollected}/2`;
-      if (scene.id === "dock") text = scene.data.phase === "fight" ? `拉扯中 ${Math.round(scene.data.progress)}% · 上钩 ${scene.data.catches}/2` : `水花定位 · 已钓 ${scene.data.catches}/2`;
-      if (scene.id === "orchard") text = `好果 ${scene.data.sorted}/2 · 果酱 ${scene.data.jamDone}/1 · 蜂蜜 ${scene.data.honey ? 1 : 0}/1`;
-      if (scene.id === "market") text = `今日成交 ${scene.data.actions}/2 · 已赚 ${scene.data.earned}G`;
-      safeText(text, 180, 95, 12, "#fff1c2");
-    }
-
-    function drawModeBadge() {
-      const label = State.desktopSim ? "电脑拖动" : State.sensorMode === "hybrid" ? "陀螺仪 + 微调" : "拖动模式";
-      const sub = State.motion.isStationary ? "稳" : "动";
-      ctx.fillStyle = "rgba(255, 239, 196, 0.16)";
-      roundRect(230, 114, 110, 24, 9, true);
-      safeText(label, 280, 126, 10, "#ffe4a8");
-      ctx.fillStyle = State.motion.isStationary ? "rgba(141, 211, 156, 0.94)" : "rgba(255, 203, 124, 0.94)";
-      roundRect(316, 116, 18, 18, 6, true);
-      safeText(sub, 325, 125, 9, "#4b2f1e");
+      drawTopBar(scene);
+      drawTaskStrip(scene);
+      drawHoldingBadge();
+      drawCrosshair();
+      drawObjectiveGuide();
+      drawBottomControls();
     }
 
     function drawObjectiveGuide() {
+      const scene = State.currentScene;
       const guide = getSceneHint();
-      if (!guide || !guide.obj) return;
-      if (State.hoverId === guide.obj.id) return;
+      if (!scene || !guide || !guide.obj) return;
+      if (scene.id === "dock" && scene.data.phase === "fight") return;
+      if (scene.id === "market" && scene.data.panel) return;
+      const assistLevel = getGuideAssistLevel(scene);
+      if (State.hoverId === guide.obj.id && assistLevel === 0) return;
+      const detail = guide.detail || describeSceneObject(scene, guide.obj).detail || guide.text;
       const obj = guide.obj;
       const delta = normDeg(obj.yaw - State.look.yaw);
       const yDelta = obj.pitch - State.look.pitch;
       const offscreen = Math.abs(delta) > Config.fov / 2 - 8;
+      const showDetail = assistLevel > 0;
+      const h = showDetail ? 52 : 38;
       ctx.save();
-      ctx.fillStyle = "rgba(64,39,27,0.7)";
-      roundRect(34, 116, 292, 30, 11, true);
-      safeText(guide.text, 180, 131, 12, "#fff1c2");
+      ctx.fillStyle = "rgba(56, 38, 29, 0.76)";
+      roundRect(28, 124, 304, h, 12, true);
+      safeText("当前目标", 44, 136, 10, "#d8b98a", "left");
+      safeText(guide.text, 44, showDetail ? 150 : 145, 13, "#fff2ce", "left");
+      if (showDetail) safeText(detail, 44, 164, 11, "#ecd2a2", "left");
+      if (assistLevel > 0) {
+        ctx.fillStyle = "rgba(255, 227, 165, 0.16)";
+        roundRect(268, 132, 48, 18, 8, true);
+        safeText(assistLevel > 1 ? "提示" : "跟随", 292, 141, 10, "#ffe8ae");
+      }
       if (offscreen) {
         drawDirectionalArrow(delta < 0, 320, true);
       } else if (Math.abs(yDelta) > 8) {
         const x = Config.W / 2 + (delta / (Config.fov / 2)) * (Config.W / 2);
-        const y = yDelta > 0 ? 168 : 486;
+        const y = yDelta > 0 ? 188 : 482;
         ctx.fillStyle = "rgba(255,232,159,0.92)";
         ctx.beginPath();
         if (yDelta > 0) {
@@ -2539,27 +2989,151 @@
 
     function drawToast() {
       if (State.toastTimer <= 0 || !State.toast) return;
+      const scene = State.currentScene;
+      const palette = getToastPalette(State.toastType);
+      const y = scene && scene.id === "dock" && scene.data.phase === "fight"
+        ? 136
+        : scene && scene.id === "market" && scene.data.panel
+          ? 118
+          : 186;
       ctx.save();
       ctx.globalAlpha = clamp(State.toastTimer, 0, 1);
-      ctx.fillStyle = "rgba(49, 32, 25, 0.78)";
-      roundRect(34, 118, 292, 34, 12, true);
-      safeText(State.toast, 180, 135, 13, "#fff5d2");
+      ctx.fillStyle = palette.bg;
+      roundRect(34, y, 292, 34, 12, true);
+      ctx.fillStyle = palette.accent;
+      roundRect(42, y + 7, 4, 20, 2, true);
+      safeText(State.toast, 184, y + 17, 13, palette.text);
       ctx.restore();
     }
 
+    function getMenuHeroLayout() {
+      return {
+        titleCnY: 96,
+        titleEnY: 126,
+        eyebrowY: 174,
+        bodyStartY: 200,
+        bodyGap: 22,
+        music: { x: 116, y: 280, w: 128, h: 40 },
+        quoteY: 486,
+        footerY: 536,
+        footerSubY: 564
+      };
+    }
+    function getMenuActionLayout() {
+      return {
+        enter: { x: 78, y: 334, w: 204, h: 50 },
+        profile: { x: 42, y: 408, w: 128, h: 40 },
+        stats: { x: 190, y: 408, w: 128, h: 40 }
+      };
+    }
+    function getMenuPanelFrame() {
+      return { x: 20, y: 72, w: 320, h: 500 };
+    }
+    function getMenuPanelCloseRect(frame) {
+      return { x: frame.x + frame.w - 74, y: frame.y + 14, w: 58, h: 28 };
+    }
+    function getProfileRenameRect(frame) {
+      return { x: frame.x + 206, y: frame.y + 97, w: 92, h: 34 };
+    }
+    function getProfileTitleRects(frame) {
+      return ProfileTitles.map((title, index) => {
+        const col = index % 2;
+        const row = Math.floor(index / 2);
+        return {
+          id: title.id,
+          x: frame.x + 24 + col * 146,
+          y: frame.y + 214 + row * 56,
+          w: 126,
+          h: 44
+        };
+      });
+    }
+
     function drawMenu() {
+      const hero = getMenuHeroLayout();
+      const actions = getMenuActionLayout();
       drawGradient("#7fbfd8", "#f3cf90", "#4c3b31");
       ctx.fillStyle = "rgba(29, 23, 20, 0.52)";
       ctx.fillRect(0, 0, Config.W, Config.H);
-      safeText("穗潮湾", 180, 122, 36, "#fff2cb");
-      safeText("Tidegrain Bay", 180, 150, 14, "#ffe0a6");
-      safeText(Config.version, 180, 173, 12, "#ffdd98");
-      safeText("四个核心场景的离线 Canvas 原型集", 180, 208, 14, "#ffeac1");
-      safeText("支持手机陀螺仪，也支持电脑端拖动测试", 180, 230, 13, "#ffeac1");
-      drawButton("进入穗潮湾", 86, 290, 188, 48, true);
-      drawButton("电脑测试", 104, 350, 152, 40);
-      safeText("定点观察 + 微操作 + 场景切换 + 资源回流", 180, 446, 12, "#ffe6b0");
-      safeText("纯离线运行，无外部资源，无网络请求", 180, 470, 12, "#d9c089");
+      safeText("穗潮湾", 180, hero.titleCnY, 36, "#fff2cb");
+      safeText("Tidegrain Bay", 180, hero.titleEnY, 14, "#ffe0a6");
+      safeText(MenuCopy.eyebrow, 180, hero.eyebrowY, 13, "#ffe6ba");
+      safeText(MenuCopy.bodyLines[0], 180, hero.bodyStartY, 12, "#ffeac1");
+      safeText(MenuCopy.bodyLines[1], 180, hero.bodyStartY + hero.bodyGap, 12, "#ffeac1");
+      safeText(MenuCopy.bodyLines[2], 180, hero.bodyStartY + hero.bodyGap * 2, 12, "#ffeac1");
+      drawButton(State.save.settings.bgmPaused ? "继续音乐" : "暂停音乐", hero.music.x, hero.music.y, hero.music.w, hero.music.h);
+      drawButton("进入穗潮湾", actions.enter.x, actions.enter.y, actions.enter.w, actions.enter.h, true);
+      drawButton("角色信息", actions.profile.x, actions.profile.y, actions.profile.w, actions.profile.h);
+      drawButton("个人数据", actions.stats.x, actions.stats.y, actions.stats.w, actions.stats.h);
+      safeText(MenuCopy.quote, 180, hero.quoteY, 13, "#ffe3a8");
+      safeText(MenuCopy.footer, 180, hero.footerY, 12, "#f0d0a0");
+      safeText("从鸡舍到夜市，把一天慢慢做顺。", 180, hero.footerSubY, 12, "#d9c089");
+      if (State.menuPanel) drawMenuPanel();
+    }
+
+    function drawMenuPanel() {
+      const frame = getMenuPanelFrame();
+      ctx.fillStyle = "rgba(16, 11, 10, 0.62)";
+      ctx.fillRect(0, 0, Config.W, Config.H);
+      ctx.fillStyle = "rgba(48, 36, 30, 0.96)";
+      roundRect(frame.x, frame.y, frame.w, frame.h, 18, true);
+      ctx.strokeStyle = "rgba(255, 232, 191, 0.14)";
+      ctx.lineWidth = 1;
+      roundRect(frame.x, frame.y, frame.w, frame.h, 18, false, true);
+      if (State.menuPanel === "profile") drawProfilePanel(frame);
+      else if (State.menuPanel === "stats") drawStatsPanel(frame);
+    }
+
+    function drawProfilePanel(frame) {
+      const close = getMenuPanelCloseRect(frame);
+      const rename = getProfileRenameRect(frame);
+      const playerTitle = getPlayerTitle();
+      safeText("角色信息", frame.x + 24, frame.y + 34, 16, "#fff4d6", "left");
+      safeText("给自己起个名字，再挑一个在湾里的身份。", frame.x + 24, frame.y + 60, 11, "#d4bb94", "left");
+      drawButton("收起", close.x, close.y, close.w, close.h);
+
+      ctx.fillStyle = "rgba(255, 242, 216, 0.08)";
+      roundRect(frame.x + 18, frame.y + 82, frame.w - 36, 106, 14, true);
+      safeText("名字", frame.x + 34, frame.y + 108, 11, "#cfb48b", "left");
+      safeText(State.save.profile.name, frame.x + 34, frame.y + 132, 21, "#fff3d4", "left");
+      safeText(playerTitle.name, frame.x + 34, frame.y + 158, 12, "#ffe0a9", "left");
+      safeText(`第 ${State.save.day} 天 · 金币 ${State.save.gold}G · 声望 ${State.save.rep}`, frame.x + 34, frame.y + 180, 11, "#d9c089", "left");
+      drawButton("改名字", rename.x, rename.y, rename.w, rename.h);
+
+      safeText("常用称号", frame.x + 24, frame.y + 208, 13, "#fff0cb", "left");
+      getProfileTitleRects(frame).forEach((rect) => {
+        const title = getProfileTitleById(rect.id);
+        drawChoiceChip(title.name, rect.x, rect.y, rect.w, rect.h, State.save.profile.titleId === rect.id);
+      });
+      safeText("名字和称号都会保存在本地，下次回来还能接着这一日。", frame.x + frame.w / 2, frame.y + 346, 11, "#d7bf98");
+      safeText("先把自己安顿好，再慢慢照看整个湾。", frame.x + frame.w / 2, frame.y + 372, 12, "#ffe1aa");
+    }
+
+    function drawStatsPanel(frame) {
+      const close = getMenuPanelCloseRect(frame);
+      const ownedAssets = getOwnedAssetKeys();
+      const collectedAssets = getCollectedAssetKeys();
+      const completedEvents = countCompletedEvents();
+      safeText("个人数据", frame.x + 24, frame.y + 34, 16, "#fff4d6", "left");
+      safeText("这一页会记住你在穗潮湾留下了多少日常。", frame.x + 24, frame.y + 60, 11, "#d4bb94", "left");
+      drawButton("收起", close.x, close.y, close.w, close.h);
+
+      ctx.fillStyle = "rgba(255, 242, 216, 0.08)";
+      roundRect(frame.x + 18, frame.y + 82, frame.w - 36, 64, 14, true);
+      safeText(State.save.profile.name, frame.x + 34, frame.y + 108, 18, "#fff3d4", "left");
+      safeText(getPlayerTitle().name, frame.x + 34, frame.y + 132, 12, "#ffe0a9", "left");
+      safeText(`今天是第 ${State.save.day} 天 · ${State.save.weather}`, frame.x + frame.w - 34, frame.y + 120, 11, "#d9c089", "right");
+
+      drawStatCard("养成天数", `${State.save.day}天`, frame.x + 20, frame.y + 170, 132, 46);
+      drawStatCard("当前资产", `${ownedAssets.length}种`, frame.x + 168, frame.y + 170, 132, 46);
+      drawStatCard("图鉴完成", `${collectedAssets.length}/${CollectionKeys.length}`, frame.x + 20, frame.y + 224, 132, 46);
+      drawStatCard("事件类型", `${completedEvents}/${EventDefs.length}`, frame.x + 168, frame.y + 224, 132, 46);
+      drawStatCard("累计入账", `${State.save.stats.totalGoldEarned}G`, frame.x + 20, frame.y + 278, 132, 46);
+      drawStatCard("完成场景", `${countUniqueSceneClears()}/${SceneOrder.length}`, frame.x + 168, frame.y + 278, 132, 46);
+
+      drawInfoStrip("持有资产", summarizeAssetLabels(ownedAssets, "仓里还在等第一批收成"), frame.x + 20, frame.y + 344, frame.w - 40, 54);
+      drawInfoStrip("图鉴已见", summarizeAssetLabels(collectedAssets, "图鉴还没有亮起第一格"), frame.x + 20, frame.y + 408, frame.w - 40, 54);
+      safeText(`订单交付 ${State.save.stats.totalOrdersCompleted} 次 · 快速售出 ${State.save.stats.totalQuickSales} 次 · 场景完成 ${State.save.stats.totalSuccessfulScenes} 次`, frame.x + frame.w / 2, frame.y + 496, 11, "#d5bd96");
     }
 
     function getHubCardLayout() {
@@ -2586,6 +3160,7 @@
         const y = layout.startY + row * (layout.cardH + layout.gapY);
         const meta = SceneMeta[id];
         const clears = State.save.sceneClears[id] || 0;
+        const best = State.save.sceneBest[id];
         ctx.fillStyle = "rgba(41, 30, 24, 0.75)";
         roundRect(x, y, layout.cardW, layout.cardH, 14, true);
         ctx.fillStyle = meta.color;
@@ -2593,8 +3168,8 @@
         safeText(meta.name, x + layout.cardW / 2, y + 21, 12, "#3f2b1c");
         safeText(meta.en, x + layout.cardW / 2, y + 44, 10, "#ffe0ab");
         safeText(meta.core, x + layout.cardW / 2, y + 62, 10, "#fff2d0");
-        safeText(clears ? `已完成 ${clears}` : "未试玩", x + layout.cardW / 2, y + 81, 11, clears ? "#b5f0a4" : "#e5c191");
-        safeText(State.save.sceneBest[id] ? `最佳 ${State.save.sceneBest[id]}s` : "--", x + layout.cardW / 2, y + 96, 10, "#d8be91");
+        if (clears) safeText(`已完成 ${clears}`, x + layout.cardW / 2, y + 81, 11, "#b5f0a4");
+        if (best) safeText(`最佳 ${best}s`, x + layout.cardW / 2, y + 96, 10, "#d8be91");
       });
 
       ctx.fillStyle = "rgba(41, 30, 24, 0.74)";
@@ -2603,9 +3178,8 @@
       safeText(formatInventorySummary(), 28, 500, 11, "#ffe5b1", "left");
       safeText(formatInventorySummary2(), 28, 524, 11, "#ffe5b1", "left");
 
-      drawButton("睡到明天", 34, 570, 104, 40, true);
-      drawButton("返回首页", 148, 570, 92, 40);
-      drawButton(State.desktopSim ? "电脑测试中" : State.sensorMode === "hybrid" ? "陀螺仪已开" : "拖动模式", 250, 570, 94, 40);
+      drawButton("睡到明天", 46, 570, 126, 40, true);
+      drawButton("返回首页", 188, 570, 126, 40);
     }
 
     function formatInventorySummary() {
@@ -2637,11 +3211,36 @@
     }
 
     function drawButton(text, x, y, w, h, primary = false) {
-      ctx.fillStyle = primary ? "#f0b45e" : "rgba(255, 235, 190, 0.18)";
-      ctx.strokeStyle = primary ? "#ffe4a7" : "rgba(255, 235, 190, 0.46)";
+      ctx.save();
+      ctx.shadowColor = primary ? "rgba(127, 82, 28, 0.32)" : "rgba(0, 0, 0, 0.18)";
+      ctx.shadowBlur = primary ? 12 : 8;
+      ctx.fillStyle = primary ? "#f0b45e" : "rgba(255, 235, 190, 0.16)";
+      ctx.strokeStyle = primary ? "#ffe4a7" : "rgba(255, 235, 190, 0.42)";
       ctx.lineWidth = 2;
       roundRect(x, y, w, h, 12, true, true);
-      safeText(text, x + w / 2, y + h / 2, primary ? 17 : 13, primary ? "#533420" : "#fff2ca");
+      ctx.restore();
+      safeText(text, x + w / 2, y + h / 2 + 0.5, primary ? 16 : 13, primary ? "#533420" : "#fff2ca");
+    }
+    function drawChoiceChip(text, x, y, w, h, active = false) {
+      ctx.save();
+      ctx.fillStyle = active ? "#f0b45e" : "rgba(255, 235, 190, 0.12)";
+      ctx.strokeStyle = active ? "#ffe4a7" : "rgba(255, 235, 190, 0.24)";
+      ctx.lineWidth = active ? 2 : 1.5;
+      roundRect(x, y, w, h, 12, true, true);
+      ctx.restore();
+      safeText(text, x + w / 2, y + h / 2 + 0.5, 12, active ? "#533420" : "#fff2ca");
+    }
+    function drawStatCard(label, value, x, y, w, h) {
+      ctx.fillStyle = "rgba(255, 242, 216, 0.08)";
+      roundRect(x, y, w, h, 12, true);
+      safeText(label, x + 16, y + 15, 10, "#cfb48b", "left");
+      safeText(value, x + 16, y + 32, 15, "#fff1cc", "left");
+    }
+    function drawInfoStrip(label, text, x, y, w, h) {
+      ctx.fillStyle = "rgba(255, 242, 216, 0.08)";
+      roundRect(x, y, w, h, 12, true);
+      safeText(label, x + 14, y + 16, 10, "#cfb48b", "left");
+      safeText(text, x + 14, y + 35, 10, "#fff1cc", "left");
     }
 
     function drawError(msg) {
@@ -2680,7 +3279,7 @@
       return x >= bx && x <= bx + bw && y >= by && y <= by + bh;
     }
     function isPlayingControl(x, y) {
-      return hit(x, y, 16, 584, 64, 34) || hit(x, y, 90, 584, 64, 34) || hit(x, y, 202, 584, 142, 34) || (State.currentScene && State.currentScene.id === "market" && State.currentScene.data.panel);
+      return hit(x, y, 16, 584, 70, 36) || hit(x, y, 94, 584, 70, 36) || hit(x, y, 172, 584, 172, 36) || (State.currentScene && State.currentScene.id === "market" && State.currentScene.data.panel);
     }
 
     function pointerDown(e) {
@@ -2728,22 +3327,68 @@
       State.drag.canPan = false;
       if (wasDrag && canPan) return;
       handleTap(p.x, p.y);
+      Audio.syncBgm();
+    }
+
+    function promptForPlayerName() {
+      const raw = window.prompt("给在穗潮湾的自己起个名字", State.save.profile.name);
+      if (raw == null) return;
+      const clean = raw.replace(/\s+/g, " ").trim().slice(0, 8);
+      if (!clean) return;
+      State.save.profile.name = clean;
+      saveGame();
+    }
+    function setPlayerTitle(titleId) {
+      if (!ProfileTitles.some((title) => title.id === titleId)) return;
+      State.save.profile.titleId = titleId;
+      saveGame();
+    }
+    function handleMenuPanelTap(x, y) {
+      const frame = getMenuPanelFrame();
+      const close = getMenuPanelCloseRect(frame);
+      if (hit(x, y, close.x, close.y, close.w, close.h)) {
+        State.menuPanel = "";
+        return true;
+      }
+      if (State.menuPanel === "profile") {
+        const rename = getProfileRenameRect(frame);
+        if (hit(x, y, rename.x, rename.y, rename.w, rename.h)) {
+          promptForPlayerName();
+          return true;
+        }
+        const titleRect = getProfileTitleRects(frame).find((rect) => hit(x, y, rect.x, rect.y, rect.w, rect.h));
+        if (titleRect) {
+          setPlayerTitle(titleRect.id);
+          return true;
+        }
+        return true;
+      }
+      if (State.menuPanel === "stats") return true;
+      return false;
     }
 
     function handleTap(x, y) {
       if (State.screen === "menu") {
-        if (hit(x, y, 86, 290, 188, 48)) requestMotionAndOpenHub();
-        else if (hit(x, y, 104, 350, 152, 40)) openHubDesktop();
+        const hero = getMenuHeroLayout();
+        const actions = getMenuActionLayout();
+        if (State.menuPanel) {
+          handleMenuPanelTap(x, y);
+          return;
+        }
+        if (hit(x, y, hero.music.x, hero.music.y, hero.music.w, hero.music.h)) Audio.toggleBgm();
+        else if (hit(x, y, actions.enter.x, actions.enter.y, actions.enter.w, actions.enter.h)) requestMotionAndOpenHub();
+        else if (hit(x, y, actions.profile.x, actions.profile.y, actions.profile.w, actions.profile.h)) State.menuPanel = "profile";
+        else if (hit(x, y, actions.stats.x, actions.stats.y, actions.stats.w, actions.stats.h)) State.menuPanel = "stats";
         return;
       }
 
       if (State.screen === "hub") {
-        if (hit(x, y, 34, 570, 104, 40)) {
+        if (hit(x, y, 46, 570, 126, 40)) {
           advanceDay();
           saveGame();
           return;
         }
-        if (hit(x, y, 148, 570, 92, 40)) {
+        if (hit(x, y, 188, 570, 126, 40)) {
           State.screen = "menu";
           return;
         }
@@ -2762,16 +3407,16 @@
       }
 
       if (State.screen === "playing") {
-        if (hit(x, y, 16, 584, 64, 34)) {
+        if (hit(x, y, 16, 584, 70, 36)) {
           leaveScene();
           return;
         }
-        if (hit(x, y, 90, 584, 64, 34)) {
+        if (hit(x, y, 94, 584, 70, 36)) {
           calibrate();
           return;
         }
         if (handleSceneOverlayTap(x, y)) return;
-        interactSceneObject(findHover());
+        interactSceneObject(getTapAssistTarget());
         return;
       }
 
@@ -2805,6 +3450,7 @@
     function init() {
       try {
         loadSave();
+        Audio.syncBgm();
         State.screenAngle = getScreenAngle();
         try {
           World.init();
