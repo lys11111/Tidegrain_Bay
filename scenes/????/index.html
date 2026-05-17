@@ -73,7 +73,14 @@
       staminaMax: 100,
       errorText: "哎呀，出错了，请重启试试吧~",
       storageKey: "tidegrain-bay-multi-scene-v1",
-      bgmPath: encodeURI("../../星露谷背景音.mp3"),
+      bgmPaths: {
+        default: encodeURI("./assets/audio/bgm/星露谷背景音.mp3"),
+        coop: encodeURI("./assets/audio/bgm/鸡舍背景音.mp3")
+      },
+      sfxPaths: {
+        cloth: { path: encodeURI("./assets/audio/sfx/衣服摩擦.mp3"), volume: 0.7 },
+        hayPlace: { path: encodeURI("./assets/audio/sfx/干草.mp3"), volume: 0.82 }
+      },
       input: {
         hoverEnterAngle: 12,
         hoverExitAngle: 9,
@@ -92,11 +99,36 @@
         idleSmoothing: 0.10,
         moveSmoothing: 0.18,
         fastTurnSmoothing: 0.32,
+        pitchLimit: 32,
+        pitchSoftZone: 8,
+        pitchOvershoot: 12,
+        pitchResistance: 2.6,
+        tapDirectRadiusMul: 1.35,
+        tapDirectMinRadius: 36,
+        tapDirectGuideBonus: 5,
         dragThresholdPx: 4,
         dragYawScale: 0.32,
         dragPitchScale: 0.11
       },
       depthWeight: { far: 0, mid: 1, near: 2, fx: 3 }
+    };
+
+    const HubMapAssetPaths = [
+      "./assets/ui/hub-map-360.png",
+      "./assets/ui/hub-map.png",
+      "../../1.png"
+    ];
+    const MenuMusicAssetPath = "./assets/ui/music-toggle.png";
+    const MenuMusicSprite = {
+      recordCx: 1341 / 2752,
+      recordCy: 736 / 1536,
+      recordR: 512 / 1536
+    };
+    const HubScenePlacements = {
+      coop: { x: 0.21, y: 0.45, w: 88, h: 32 },
+      orchard: { x: 0.7, y: 0.29, w: 88, h: 32 },
+      dock: { x: 0.65, y: 0.6, w: 88, h: 32 },
+      market: { x: 0.81, y: 0.82, w: 88, h: 32 }
     };
 
     const SceneOrder = ["coop", "dock", "orchard", "market"];
@@ -272,12 +304,40 @@
       motion: { stationaryFrames: 0, isStationary: false, lastTurnSpeed: 0 },
       particles: [],
       floaters: [],
+      menuMusicSpin: 0,
       save: defaultSave()
+    };
+
+    const UiAssets = {
+      hubMap: null,
+      musicToggle: null,
+      init() {
+        const load = (path) => {
+          const img = new window.Image();
+          img.decoding = "async";
+          img.src = path;
+          return img;
+        };
+        const loadFirstAvailable = (paths, assign) => {
+          const tryLoad = (index) => {
+            if (index >= paths.length) return;
+            const img = load(paths[index]);
+            assign(img);
+            img.addEventListener("error", () => tryLoad(index + 1), { once: true });
+          };
+          tryLoad(0);
+        };
+        loadFirstAvailable(HubMapAssetPaths, (img) => {
+          this.hubMap = img;
+        });
+        this.musicToggle = load(MenuMusicAssetPath);
+      }
     };
 
     const Audio = {
       ctx: null,
-      bgm: null,
+      bgm: {},
+      sfx: {},
       ensure() {
         if (!this.ctx) {
           const AC = window.AudioContext || window.webkitAudioContext;
@@ -285,34 +345,86 @@
         }
         if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
       },
-      ensureBgm() {
-        if (this.bgm) return this.bgm;
+      createMedia(path, loop, volume) {
         try {
-          const music = new window.Audio(Config.bgmPath);
+          const music = new window.Audio(path);
           music.loop = true;
           music.preload = "auto";
-          music.volume = 0.42;
-          this.bgm = music;
+          music.volume = volume;
+          music.loop = !!loop;
+          return music;
         } catch (_) {
-          this.bgm = null;
+          return null;
         }
-        return this.bgm;
+      },
+      ensureBgm(key) {
+        if (Object.prototype.hasOwnProperty.call(this.bgm, key)) return this.bgm[key];
+        const path = Config.bgmPaths[key];
+        const volume = key === "coop" ? 0.5 : 0.42;
+        this.bgm[key] = path ? this.createMedia(path, true, volume) : null;
+        return this.bgm[key];
+      },
+      ensureSfx(key) {
+        if (Object.prototype.hasOwnProperty.call(this.sfx, key)) return this.sfx[key];
+        const entry = Config.sfxPaths[key];
+        this.sfx[key] = entry ? this.createMedia(entry.path, false, entry.volume == null ? 1 : entry.volume) : null;
+        return this.sfx[key];
+      },
+      getActiveBgmKey() {
+        return State.screen === "playing" && State.currentScene && State.currentScene.id === "coop" ? "coop" : "default";
+      },
+      pauseInactiveBgms(activeKey) {
+        Object.keys(this.bgm).forEach((key) => {
+          if (key === activeKey) return;
+          const music = this.bgm[key];
+          if (music && !music.paused) music.pause();
+        });
+      },
+      playMedia(media) {
+        if (!media) return;
+        const playPromise = media.play();
+        if (playPromise && typeof playPromise.catch === "function") playPromise.catch(() => {});
+      },
+      restartBgm(key) {
+        const music = this.ensureBgm(key);
+        if (!music) return;
+        try {
+          music.pause();
+          music.currentTime = 0;
+        } catch (_) {}
       },
       syncBgm() {
-        const music = this.ensureBgm();
-        if (!music || !State.save || !State.save.settings) return;
+        if (!State.save || !State.save.settings) return;
+        const activeKey = this.getActiveBgmKey();
+        this.pauseInactiveBgms(activeKey);
+        const music = this.ensureBgm(activeKey);
+        if (!music) return;
         if (State.save.settings.bgmPaused) {
           if (!music.paused) music.pause();
           return;
         }
-        const playPromise = music.play();
-        if (playPromise && typeof playPromise.catch === "function") playPromise.catch(() => {});
+        this.playMedia(music);
       },
       toggleBgm() {
         if (!State.save || !State.save.settings) return;
         State.save.settings.bgmPaused = !State.save.settings.bgmPaused;
         saveGame();
         this.syncBgm();
+      },
+      playEffect(key, fallbackType) {
+        try {
+          this.ensure();
+          const sound = this.ensureSfx(key);
+          if (!sound) {
+            if (fallbackType) this.beep(fallbackType);
+            return;
+          }
+          sound.pause();
+          sound.currentTime = 0;
+          this.playMedia(sound);
+        } catch (_) {
+          if (fallbackType) this.beep(fallbackType);
+        }
       },
       beep(type) {
         try {
@@ -936,6 +1048,28 @@
       return n === -180 ? 180 : n;
     }
     function angleDistance(a, b) { return Math.abs(normDeg(a - b)); }
+    function getPitchRawLimit() {
+      return Config.input.pitchLimit + Config.input.pitchOvershoot;
+    }
+    function clampPitchInput(v) {
+      const rawLimit = getPitchRawLimit();
+      return clamp(v, -rawLimit, rawLimit);
+    }
+    function softenPitch(v) {
+      const limit = Config.input.pitchLimit;
+      const softZone = clamp(Config.input.pitchSoftZone, 0, limit);
+      const rawLimit = getPitchRawLimit();
+      const linearLimit = Math.max(0, limit - softZone);
+      const capped = clamp(v, -rawLimit, rawLimit);
+      const abs = Math.abs(capped);
+      if (abs <= linearLimit) return capped;
+      const range = Math.max(0.0001, rawLimit - linearLimit);
+      const t = clamp((abs - linearLimit) / range, 0, 1);
+      const resistance = Math.max(0.2, Config.input.pitchResistance);
+      const curve = Math.log1p(t * resistance) / Math.log1p(resistance);
+      const sign = capped < 0 ? -1 : 1;
+      return sign * (linearLimit + curve * (limit - linearLimit));
+    }
     function vibrate(pattern) {
       try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (_) {}
     }
@@ -1282,11 +1416,17 @@
       const freshMul = State.currentScene && hasGuideBoost(State.currentScene.id) ? 1.12 : 1;
       return radius * guideMul * freshMul;
     }
+    function getDirectTapRadius(obj, projection) {
+      return Math.max(
+        Config.input.tapDirectMinRadius,
+        getHoverRadius(obj, projection) * Config.input.tapDirectRadiusMul
+      );
+    }
     function inventoryHasAny(keys) {
       return keys.some((key) => (State.save.inventory[key] || 0) > 0);
     }
     function describeSceneObject(scene, obj) {
-      if (!scene || !obj) return { state: "idle", title: "观察场景", detail: "慢慢移动视角，对准高亮目标" };
+      if (!scene || !obj) return { state: "idle", title: "观察场景", detail: "慢慢移动视角，把目标拉进画面后点它" };
       const d = scene.data || {};
       if (scene.id === "coop") {
         if (obj.kind === "hopper") {
@@ -1376,7 +1516,7 @@
       if (hover) return describeSceneObject(scene, hover);
       if (State.edgeHintId) return { state: "hint", title: "目标在视野边缘", detail: "跟着箭头把目标拉回屏幕中央" };
       return getGuideAssistLevel(scene) > 0
-        ? { state: "hint", title: "慢慢转动视角", detail: "把准星对准高亮目标再点击" }
+        ? { state: "hint", title: "慢慢转动视角", detail: "把目标拉进画面后，直接点它或用准星点击" }
         : { state: "idle", title: "观察场景", detail: "" };
     }
     function getSceneTaskCards(scene) {
@@ -1422,6 +1562,29 @@
         if (lookDist > Config.input.tapAssistAngle) continue;
         const score = lookDist - (obj.id === guideId ? Config.input.tapGuideBonus : 0);
         if (score < bestScore) {
+          best = obj;
+          bestScore = score;
+        }
+      }
+      return best;
+    }
+    function getDirectTapTarget(x, y) {
+      if (!State.currentScene) return null;
+      const guideId = getGuideTargetId();
+      const current = State.hoverId ? getSceneObjects().find((obj) => obj.id === State.hoverId) : null;
+      let best = null;
+      let bestScore = -Infinity;
+      for (const obj of getSceneObjects()) {
+        if (!isInteractable(obj)) continue;
+        const p = project(obj);
+        if (!p) continue;
+        const radius = getDirectTapRadius(obj, p);
+        const dist = Math.hypot(p.x - x, (p.y - y) * 1.08);
+        if (dist > radius) continue;
+        let score = getObjectPriority(obj) + p.scale * 24 - dist;
+        if (obj.id === guideId) score += Config.input.tapDirectGuideBonus;
+        if (current && current.id === obj.id) score += 6;
+        if (score > bestScore) {
           best = obj;
           bestScore = score;
         }
@@ -1546,9 +1709,10 @@
         yaw += State.orientation.gamma * 0.22 * angle;
         pitch = (State.orientation.beta - State.calibration.beta) * 0.58;
       }
+      const rawPitch = clampPitchInput(pitch + State.drag.pitch);
       return {
         yaw: normDeg(yaw + State.drag.yaw),
-        pitch: clamp(pitch + State.drag.pitch, -32, 32)
+        pitch: softenPitch(rawPitch)
       };
     }
 
@@ -1582,7 +1746,7 @@
       } else {
         nextLook = {
           yaw: normDeg(State.drag.yaw),
-          pitch: clamp(State.drag.pitch, -32, 32)
+          pitch: softenPitch(State.drag.pitch)
         };
       }
 
@@ -1601,7 +1765,7 @@
       if (Math.abs(pitchDelta) > deadzone.pitch) {
         State.look.pitch += pitchDelta * smoothing;
       }
-      State.look.pitch = clamp(State.look.pitch, -32, 32);
+      State.look.pitch = clamp(State.look.pitch, -Config.input.pitchLimit, Config.input.pitchLimit);
     }
 
     async function requestMotionAndOpenHub() {
@@ -1728,6 +1892,8 @@
       State.currentScene = createScene(id);
       State.result = null;
       State.screen = "playing";
+      if (id === "coop") Audio.restartBgm("coop");
+      Audio.syncBgm();
       State.needsCalibration = State.sensorReady && !State.desktopSim;
       calibrate();
       if (World.ready) World.loadScene(State.currentScene);
@@ -1742,6 +1908,7 @@
       State.hoverId = null;
       State.press.down = false;
       saveGame();
+      Audio.syncBgm();
     }
 
     function finishScene(success, body, rewardLines) {
@@ -1764,6 +1931,9 @@
         best: State.save.sceneBest[id] || 0
       };
       State.screen = "result";
+      State.currentScene = null;
+      if (World.ready) World.unloadScene();
+      Audio.syncBgm();
       Audio.beep(success ? "win" : "miss");
     }
 
@@ -1901,7 +2071,7 @@
       const scene = State.currentScene;
       if (!scene || !obj) {
         const guide = getSceneHint();
-        setToast(guide && guide.text ? guide.text : "再靠近一点点", 1, "warn");
+        setToast(guide && guide.text ? guide.text : "把目标拉进画面后点一下", 1, "warn");
         Audio.beep("miss");
         return;
       }
@@ -1934,7 +2104,7 @@
       if (obj.kind === "hopper") {
         d.holding = "hay";
         setToast("手持干草", 1);
-        Audio.beep("pickup");
+        Audio.playEffect("cloth", "pickup");
         return;
       }
       if (obj.kind === "trough") {
@@ -1948,7 +2118,7 @@
         d.holding = "";
         d.feedPlaced += 1;
         setToast(`食槽放好啦 ${d.feedPlaced}/3`, 1);
-        Audio.beep("place");
+        Audio.playEffect("hayPlace", "place");
         sparkleAtObject(obj, "#fff1a2");
         scene.objects.filter(o => o.kind === "chicken").forEach((chick) => { chick.mood = "eat"; });
         if (d.feedPlaced >= 3 && d.petsDone >= 3 && d.eggsCollected >= 2) finishCoopScene(scene);
@@ -1975,7 +2145,7 @@
         d.eggsCollected += 1;
         addInventory(obj.quality, 1);
         addFloater(`+1 ${obj.label}`, Config.W * 0.76, 154, obj.quality === "silverEgg" ? "#edf7ff" : "#fff7d6");
-        Audio.beep("harvest");
+        Audio.playEffect("cloth", "harvest");
         if (d.feedPlaced >= 3 && d.petsDone >= 3 && d.eggsCollected >= 2) finishCoopScene(scene);
       }
     }
@@ -2206,6 +2376,7 @@
       updateLook();
       if (State.screen === "playing") updateScene(dt);
       if (World.ready && State.screen === "playing" && State.currentScene) World.update(State.currentScene, dt);
+      if (!State.save.settings.bgmPaused) State.menuMusicSpin = (State.menuMusicSpin + dt * 1.45) % (Math.PI * 2);
 
       for (let i = State.particles.length - 1; i >= 0; i--) {
         const p = State.particles[i];
@@ -3013,7 +3184,7 @@
         eyebrowY: 174,
         bodyStartY: 200,
         bodyGap: 22,
-        music: { x: 116, y: 280, w: 128, h: 40 },
+        music: { x: 272, y: 16, w: 72, h: 72 },
         quoteY: 486,
         footerY: 536,
         footerSubY: 564
@@ -3047,6 +3218,106 @@
           h: 44
         };
       });
+    }
+
+    function drawMusicFallback(cx, cy, size) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.fillStyle = "#161212";
+      ctx.beginPath();
+      ctx.arc(0, 0, size * 0.46, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+      ctx.lineWidth = 2;
+      for (const scale of [0.78, 0.58, 0.4]) {
+        ctx.beginPath();
+        ctx.arc(0, 0, size * scale * 0.46, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#b02a34";
+      ctx.beginPath();
+      ctx.arc(0, 0, size * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#efe0a8";
+      ctx.beginPath();
+      ctx.arc(0, 0, size * 0.035, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawMenuMusicButton(rect) {
+      const paused = !!State.save.settings.bgmPaused;
+      const frameRadius = 16;
+      const outerPad = 4;
+      const innerPad = 3;
+      const cx = rect.x + rect.w / 2;
+      const cy = rect.y + rect.h / 2;
+      const content = {
+        x: rect.x + outerPad,
+        y: rect.y + outerPad,
+        w: rect.w - outerPad * 2,
+        h: rect.h - outerPad * 2
+      };
+
+      ctx.save();
+      ctx.shadowColor = paused ? "rgba(0, 0, 0, 0.18)" : "rgba(255, 192, 110, 0.34)";
+      ctx.shadowBlur = paused ? 10 : 18;
+      ctx.fillStyle = paused ? "rgba(44, 34, 29, 0.92)" : "rgba(63, 45, 34, 0.94)";
+      roundRect(rect.x, rect.y, rect.w, rect.h, frameRadius, true);
+      ctx.restore();
+
+      const img = UiAssets.musicToggle;
+      if (img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        const targetW = content.w - innerPad * 2;
+        const targetH = content.h - innerPad * 2;
+        const scale = Math.min(targetW / img.naturalWidth, targetH / img.naturalHeight);
+        const drawW = img.naturalWidth * scale;
+        const drawH = img.naturalHeight * scale;
+        const drawX = content.x + (content.w - drawW) / 2;
+        const drawY = content.y + (content.h - drawH) / 2;
+        const recordCx = drawX + drawW * MenuMusicSprite.recordCx;
+        const recordCy = drawY + drawH * MenuMusicSprite.recordCy;
+        const recordR = drawH * MenuMusicSprite.recordR;
+
+        ctx.save();
+        roundRect(content.x, content.y, content.w, content.h, 12, false, true);
+        ctx.clip();
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, drawX, drawY, drawW, drawH);
+        ctx.imageSmoothingEnabled = true;
+        ctx.restore();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(recordCx, recordCy, recordR, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.translate(recordCx, recordCy);
+        if (!paused) ctx.rotate(State.menuMusicSpin);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, drawX - recordCx, drawY - recordCy, drawW, drawH);
+        ctx.imageSmoothingEnabled = true;
+        ctx.restore();
+      } else {
+        drawMusicFallback(cx, cy, Math.min(content.w, content.h) - 6);
+      }
+
+      if (paused) {
+        ctx.save();
+        ctx.fillStyle = "rgba(18, 12, 10, 0.34)";
+        roundRect(content.x, content.y, content.w, content.h, 12, true);
+        ctx.restore();
+      }
+
+      ctx.save();
+      ctx.strokeStyle = paused ? "rgba(255, 235, 190, 0.36)" : "#ffe4a7";
+      ctx.lineWidth = 2;
+      roundRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2, frameRadius - 1, false, true);
+      if (paused) {
+        ctx.fillStyle = "#fff2ca";
+        roundRect(rect.x + rect.w - 23, rect.y + 12, 4, 14, 2, true);
+        roundRect(rect.x + rect.w - 16, rect.y + 12, 4, 14, 2, true);
+      }
+      ctx.restore();
     }
 
     function drawMenu() {
@@ -3136,59 +3407,66 @@
       safeText(`订单交付 ${State.save.stats.totalOrdersCompleted} 次 · 快速售出 ${State.save.stats.totalQuickSales} 次 · 场景完成 ${State.save.stats.totalSuccessfulScenes} 次`, frame.x + frame.w / 2, frame.y + 496, 11, "#d5bd96");
     }
 
-    function getHubCardLayout() {
-      return { cols: 2, startX: 20, startY: 118, cardW: 152, cardH: 104, gapX: 16, gapY: 18 };
+    function getHubSceneButtons() {
+      return SceneOrder.map((id) => {
+        const placement = HubScenePlacements[id];
+        return {
+          id,
+          x: placement.x * Config.W - placement.w / 2,
+          y: placement.y * Config.H - placement.h / 2,
+          w: placement.w,
+          h: placement.h
+        };
+      });
+    }
+
+    function drawHubSceneButton(button) {
+      const meta = SceneMeta[button.id];
+      ctx.save();
+      ctx.shadowColor = `${meta.color}66`;
+      ctx.shadowBlur = 12;
+      ctx.fillStyle = "rgba(33, 25, 22, 0.78)";
+      ctx.strokeStyle = meta.color;
+      ctx.lineWidth = 2;
+      roundRect(button.x, button.y, button.w, button.h, 13, true, true);
+      ctx.restore();
+      safeText(meta.name, button.x + button.w / 2, button.y + button.h / 2 + 0.5, 12, "#fff5db");
     }
 
     function drawHub() {
-      drawGradient("#7db6cf", "#e8cf91", "#5d4a3f");
-      ctx.fillStyle = "rgba(24, 19, 17, 0.4)";
+      const map = UiAssets.hubMap;
+      if (map && map.complete && map.naturalWidth > 0 && map.naturalHeight > 0) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(map, 0, 0, Config.W, Config.H);
+        ctx.imageSmoothingEnabled = true;
+      } else {
+        drawGradient("#83c2e8", "#9ad36b", "#467ab0");
+      }
+
+      ctx.fillStyle = "rgba(18, 14, 13, 0.08)";
       ctx.fillRect(0, 0, Config.W, Config.H);
-      ctx.fillStyle = "rgba(46, 34, 28, 0.72)";
-      roundRect(12, 12, 336, 90, 14, true);
-      safeText("穗潮湾场景选择", 28, 30, 15, "#fff4d6", "left");
-      safeText(`第 ${State.save.day} 天 · ${State.save.weather}`, 28, 54, 13, "#ffe5b1", "left");
-      safeText(`金币 ${State.save.gold}G`, 280, 30, 14, "#fff4d6");
-      safeText(`体力 ${State.save.stamina}/${Config.staminaMax}`, 280, 54, 12, "#ffe5b1");
-      safeText(`声望 ${State.save.rep}`, 280, 74, 12, "#ffe5b1");
 
-      const layout = getHubCardLayout();
-      SceneOrder.forEach((id, index) => {
-        const col = index % layout.cols;
-        const row = Math.floor(index / layout.cols);
-        const x = layout.startX + col * (layout.cardW + layout.gapX);
-        const y = layout.startY + row * (layout.cardH + layout.gapY);
-        const meta = SceneMeta[id];
-        const clears = State.save.sceneClears[id] || 0;
-        const best = State.save.sceneBest[id];
-        ctx.fillStyle = "rgba(41, 30, 24, 0.75)";
-        roundRect(x, y, layout.cardW, layout.cardH, 14, true);
-        ctx.fillStyle = meta.color;
-        roundRect(x + 8, y + 8, layout.cardW - 16, 26, 9, true);
-        safeText(meta.name, x + layout.cardW / 2, y + 21, 12, "#3f2b1c");
-        safeText(meta.en, x + layout.cardW / 2, y + 44, 10, "#ffe0ab");
-        safeText(meta.core, x + layout.cardW / 2, y + 62, 10, "#fff2d0");
-        if (clears) safeText(`已完成 ${clears}`, x + layout.cardW / 2, y + 81, 11, "#b5f0a4");
-        if (best) safeText(`最佳 ${best}s`, x + layout.cardW / 2, y + 96, 10, "#d8be91");
-      });
+      ctx.fillStyle = "rgba(33, 25, 22, 0.54)";
+      roundRect(14, 14, 138, 48, 14, true);
+      safeText("穗潮湾地图", 28, 30, 14, "#fff4d6", "left");
+      safeText(`第 ${State.save.day} 天 · ${State.save.weather}`, 28, 49, 11, "#ffe5b1", "left");
 
-      ctx.fillStyle = "rgba(41, 30, 24, 0.74)";
-      roundRect(12, 456, 336, 90, 14, true);
-      safeText("背包概览", 28, 474, 14, "#fff4d6", "left");
-      safeText(formatInventorySummary(), 28, 500, 11, "#ffe5b1", "left");
-      safeText(formatInventorySummary2(), 28, 524, 11, "#ffe5b1", "left");
+      ctx.fillStyle = "rgba(33, 25, 22, 0.54)";
+      roundRect(204, 14, 142, 62, 14, true);
+      safeText(`金币 ${State.save.gold}G`, 218, 31, 11, "#fff4d6", "left");
+      safeText(`体力 ${State.save.stamina}/${Config.staminaMax}`, 218, 49, 11, "#ffe5b1", "left");
+      safeText(`声望 ${State.save.rep}`, 218, 67, 11, "#ffe5b1", "left");
 
-      drawButton("睡到明天", 46, 570, 126, 40, true);
-      drawButton("返回首页", 188, 570, 126, 40);
-    }
+      getHubSceneButtons().forEach(drawHubSceneButton);
 
-    function formatInventorySummary() {
-      const inv = State.save.inventory;
-      return `鸡蛋 ${inv.egg} · 银星蛋 ${inv.silverEgg} · 鲜鱼 ${inv.fish} · 贝壳 ${inv.shell}`;
-    }
-    function formatInventorySummary2() {
-      const inv = State.save.inventory;
-      return `鲜果 ${inv.berry} · 果酱 ${inv.jam} · 蜂蜜 ${inv.honey}`;
+      const fade = ctx.createLinearGradient(0, Config.H - 104, 0, Config.H);
+      fade.addColorStop(0, "rgba(20, 16, 14, 0)");
+      fade.addColorStop(1, "rgba(20, 16, 14, 0.34)");
+      ctx.fillStyle = fade;
+      ctx.fillRect(0, Config.H - 104, Config.W, 104);
+
+      drawButton("睡到明天", 36, 584, 132, 40, true);
+      drawButton("返回首页", 192, 584, 132, 40);
     }
 
     function drawResult() {
@@ -3211,6 +3489,13 @@
     }
 
     function drawButton(text, x, y, w, h, primary = false) {
+      if (State.screen === "menu") {
+        const musicRect = getMenuHeroLayout().music;
+        if (x === musicRect.x && y === musicRect.y && w === musicRect.w && h === musicRect.h) {
+          drawMenuMusicButton({ x, y, w, h });
+          return;
+        }
+      }
       ctx.save();
       ctx.shadowColor = primary ? "rgba(127, 82, 28, 0.32)" : "rgba(0, 0, 0, 0.18)";
       ctx.shadowBlur = primary ? 12 : 8;
@@ -3306,7 +3591,7 @@
       State.drag.y = p.y;
       if (State.drag.canPan) {
         State.drag.yaw = normDeg(State.drag.yaw - dx * Config.input.dragYawScale);
-        State.drag.pitch = clamp(State.drag.pitch + dy * Config.input.dragPitchScale, -32, 32);
+        State.drag.pitch = clampPitchInput(State.drag.pitch + dy * Config.input.dragPitchScale);
       }
     }
 
@@ -3383,23 +3668,18 @@
       }
 
       if (State.screen === "hub") {
-        if (hit(x, y, 46, 570, 126, 40)) {
+        if (hit(x, y, 36, 584, 132, 40)) {
           advanceDay();
           saveGame();
           return;
         }
-        if (hit(x, y, 188, 570, 126, 40)) {
+        if (hit(x, y, 192, 584, 132, 40)) {
           State.screen = "menu";
           return;
         }
-        const layout = getHubCardLayout();
-        for (let i = 0; i < SceneOrder.length; i++) {
-          const col = i % layout.cols;
-          const row = Math.floor(i / layout.cols);
-          const bx = layout.startX + col * (layout.cardW + layout.gapX);
-          const by = layout.startY + row * (layout.cardH + layout.gapY);
-          if (hit(x, y, bx, by, layout.cardW, layout.cardH)) {
-            enterScene(SceneOrder[i]);
+        for (const button of getHubSceneButtons()) {
+          if (hit(x, y, button.x, button.y, button.w, button.h)) {
+            enterScene(button.id);
             return;
           }
         }
@@ -3416,7 +3696,7 @@
           return;
         }
         if (handleSceneOverlayTap(x, y)) return;
-        interactSceneObject(getTapAssistTarget());
+        interactSceneObject(getDirectTapTarget(x, y) || getTapAssistTarget());
         return;
       }
 
@@ -3449,6 +3729,7 @@
 
     function init() {
       try {
+        UiAssets.init();
         loadSave();
         Audio.syncBgm();
         State.screenAngle = getScreenAngle();
